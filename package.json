@@ -1,0 +1,47 @@
+{
+  "name": "mtg-deckbuild-mcp",
+  "version": "1.0.0",
+  "description": "Scryfallに接続してAIがMTGデッキビルドを行うMCPサーバー",
+  "type": "module",
+  "bin": {
+    "mtg-deckbuild-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nemonet1337/MtG-Deckbuild-MCP.git"
+  },
+  "keywords": [
+    "mcp",
+    "magic-the-gathering",
+    "mtg",
+    "scryfall",
+    "deckbuilding"
+  ],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/nemonet1337/MtG-Deckbuild-MCP/issues"
+  },
+  "homepage": "https://github.com/nemonet1337/MtG-Deckbuild-MCP#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3"
+  }
+}
