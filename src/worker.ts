@@ -13,7 +13,10 @@ export default {
     }
     if (url.pathname === "/mcp" && request.method === "GET") {
       // Stateless server: no server-initiated push, so no standalone SSE stream to offer.
-      return new Response(null, { status: 405, headers: { Allow: "POST, DELETE, OPTIONS" } });
+      return new Response(null, {
+        status: 405,
+        headers: { Allow: "POST, DELETE, OPTIONS", "Access-Control-Allow-Origin": "*" }
+      });
     }
     return createMcpHandler(createServer(), { route: "/mcp", enableJsonResponse: true })(request, env, ctx);
   }
