@@ -3,6 +3,9 @@ import { ScryfallCard, ScryfallList, MtgColor, MtgFormat } from "../types/mtg.js
 const SCRYFALL_API = "https://api.scryfall.com";
 const USER_AGENT = "MtG-Deckbuild-MCP/1.0 (Model Context Protocol deckbuilding assistant)";
 const MIN_REQUEST_INTERVAL_MS = 90;
+const MAX_BANNED_LIST_RESULTS = 200;
+
+type BannedListCache = Record<MtgFormat, Set<string>>;
 
 export function colorIdentityQuery(colors: MtgColor[], exact = false): string {
   if (colors.includes("C")) {
@@ -58,6 +61,7 @@ export class ScryfallClient {
   // 50-100ms courtesy interval (https://scryfall.com/docs/api).
   private queue: Promise<void> = Promise.resolve();
   private lastRequestAt = 0;
+  private bannedLists: BannedListCache = {} as BannedListCache;
 
   private waitForRateLimit(): Promise<void> {
     const turn = this.queue.then(async () => {
@@ -122,6 +126,18 @@ export class ScryfallClient {
     const params = new URLSearchParams({ q: query });
     const result = await this.fetchJson<{ data: string[] }>(`${SCRYFALL_API}/cards/autocomplete?${params.toString()}`);
     return result.data;
+  }
+
+  async fetchBannedList(format: MtgFormat): Promise<Set<string>> {
+    if (this.bannedLists[format]) return this.bannedLists[format];
+    if (format === "premodern") {
+      this.bannedLists[format] = new Set();
+      return this.bannedLists[format];
+    }
+    const cards = await this.searchCards(`banned:${format}`, { limit: MAX_BANNED_LIST_RESULTS, unique: "cards" });
+    const banned = new Set(cards.map((card) => card.name.toLowerCase()));
+    this.bannedLists[format] = banned;
+    return banned;
   }
 }
 

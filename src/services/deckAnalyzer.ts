@@ -15,6 +15,7 @@ export type AnalyzedCard = DecklistEntry & {
   resolvedName?: string;
   typeLine?: string;
   legality: string;
+  legalityCategory: "legal" | "banned" | "restricted" | "not_legal" | "manual-check" | "unknown" | "unresolved";
   singletonIssue: boolean;
 };
 
@@ -51,15 +52,19 @@ export class DeckAnalyzerService {
       try {
         const card = await this.client.namedCard(entry.name);
         const legality = format === "premodern" ? "manual-check" : card.legalities?.[format] ?? "unknown";
+        const legalityCategory = legality === "legal" || legality === "manual-check"
+          ? (legality as "legal" | "manual-check")
+          : (legality === "banned" ? "banned" : legality === "restricted" ? "restricted" : "not_legal");
         checked.push({
           ...entry,
           resolvedName: card.name,
           typeLine: card.type_line,
           legality,
+          legalityCategory,
           singletonIssue: singleton && entry.quantity > 1 && !SINGLETON_EXEMPT.test(card.name)
         });
       } catch {
-        checked.push({ ...entry, legality: "unresolved", singletonIssue: false });
+        checked.push({ ...entry, legality: "unresolved", legalityCategory: "unresolved", singletonIssue: false });
       }
     }
 
@@ -67,7 +72,7 @@ export class DeckAnalyzerService {
       format,
       total,
       uniqueCards: entries.length,
-      issues: checked.filter((entry) => (entry.legality !== "legal" && entry.legality !== "manual-check") || entry.singletonIssue),
+      issues: checked.filter((entry) => entry.singletonIssue || (entry.legalityCategory !== "legal" && entry.legalityCategory !== "manual-check")),
       cards: checked
     };
   }
