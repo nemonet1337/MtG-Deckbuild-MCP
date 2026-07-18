@@ -1,7 +1,7 @@
+import { USER_AGENT } from "../config.js";
 import { ScryfallCard, ScryfallList, MtgColor, MtgFormat } from "../types/mtg.js";
 
 const SCRYFALL_API = "https://api.scryfall.com";
-const USER_AGENT = "MtG-Deckbuild-MCP/1.0 (Model Context Protocol deckbuilding assistant)";
 const MAX_BANNED_LIST_RESULTS = 200;
 
 type BannedListCache = Record<MtgFormat, Set<string>>;

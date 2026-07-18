@@ -1,3 +1,4 @@
+import { USER_AGENT } from "../config.js";
 import { FORMAT_LABELS, MtgFormat } from "../types/mtg.js";
 
 export type TournamentReference = {
@@ -7,10 +8,11 @@ export type TournamentReference = {
   excerpts: string[];
 };
 
+// Fetches third-party tournament sites (not Scryfall), so this stays outside ScryfallClient.
 async function fetchText(url: string): Promise<string> {
   const response = await fetch(url, {
     headers: {
-      "User-Agent": "MtG-Deckbuild-MCP/1.0 tournament reference fetcher",
+      "User-Agent": USER_AGENT,
       Accept: "text/html, text/plain;q=0.9, */*;q=0.8"
     }
   });
