@@ -1,10 +1,25 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { DeckAnalyzerService } from "./services/deckAnalyzer.js";
+import { AuthContext } from "./auth.js";
+import { APP_VERSION } from "./config.js";
+import { BudgetAlternativesService } from "./services/budgetAlternatives.js";
+import { DeckAnalyzerService, parseDecklist } from "./services/deckAnalyzer.js";
 import { DeckBuilderService } from "./services/deckbuilder.js";
+import { DeckStore, SavedDeck, deckSummary } from "./services/deckStore.js";
+import { PLAYSTYLES, runWizard, WizardState } from "./services/deckWizard.js";
 import { colorIdentityQuery, formatLegalityQuery, mechanicQuery, ScryfallClient, summarizeCard } from "./services/scryfall.js";
 import { getTournamentReferences } from "./services/tournamentSources.js";
 import { BUDGET_TIERS, COST_MODELS, CostModel, DeckBuildRequest, MTG_COLORS, MTG_FORMATS, MtgColor, MtgFormat, normalizeColors, POWER_LEVELS } from "./types/mtg.js";
+
+export interface ServerDeps {
+  auth: AuthContext;
+  deckStore: DeckStore | null;
+}
+
+const DEFAULT_DEPS: ServerDeps = {
+  auth: { authenticated: true, userId: "local" },
+  deckStore: null
+};
 
 const formatSchema = z.enum(MTG_FORMATS);
 const colorSchema = z.enum(MTG_COLORS);
@@ -56,14 +71,49 @@ function requestFromArgs(args: {
   };
 }
 
-export function createServer(): McpServer {
+const wizardStateSchema = z.object({
+  format: formatSchema.optional(),
+  colors: z.array(colorSchema).optional(),
+  playstyle: z.enum(PLAYSTYLES).optional(),
+  strategy: z.string().optional(),
+  mechanics: z.array(z.string()).optional(),
+  commander: z.string().optional(),
+  budget: budgetSchema.optional(),
+  powerLevel: powerLevelSchema.optional(),
+  costModel: costModelSchema.optional(),
+  skippedOptional: z.boolean().optional()
+});
+
+function authRequiredError() {
+  return {
+    isError: true,
+    content: [{
+      type: "text" as const,
+      text: "Authentication required: send 'Authorization: Bearer <AUTH_TOKEN>' to use my-deck tools."
+    }]
+  };
+}
+
+function parseCardLine(line: string): { quantity: number; name: string } {
+  const match = line.trim().match(/^(\d+)[xX]?\s+(.+)$/);
+  if (match) return { quantity: Number(match[1]), name: match[2].trim() };
+  return { quantity: 1, name: line.trim() };
+}
+
+function serializeDecklist(entries: Map<string, number>): string {
+  return [...entries.entries()].map(([name, quantity]) => `${quantity} ${name}`).join("\n");
+}
+
+export function createServer(deps?: Partial<ServerDeps>): McpServer {
+  const { auth, deckStore } = { ...DEFAULT_DEPS, ...deps };
   const client = new ScryfallClient();
   const deckBuilder = new DeckBuilderService(client);
   const deckAnalyzer = new DeckAnalyzerService(client);
+  const budgetAlternatives = new BudgetAlternativesService(client);
 
   const server = new McpServer({
     name: "mtg-deckbuild-mcp",
-    version: "1.0.0"
+    version: APP_VERSION
   });
 
   server.registerTool(
@@ -177,6 +227,166 @@ export function createServer(): McpServer {
     },
     async ({ format, archetype, limit }) => jsonText(await getTournamentReferences(format, archetype ?? "", limit ?? 8))
   );
+
+  server.registerTool(
+    "deck_wizard",
+    {
+      title: "Interactive Deck Wizard",
+      description:
+        "Interactively gather deck preferences (format, colors, playstyle, mechanics, budget, power level) and build an optimal deck. " +
+        "Stateless: ask the user the returned questions, merge the answers into the returned `state`, and call this tool again with that state. " +
+        "Set finalize:true to build immediately once format and colors are known.",
+      inputSchema: {
+        state: wizardStateSchema.optional(),
+        finalize: z.boolean().optional()
+      }
+    },
+    async ({ state, finalize }) => jsonText(await runWizard(deckBuilder, (state ?? {}) as WizardState, finalize ?? false))
+  );
+
+  server.registerTool(
+    "suggest_budget_alternatives",
+    {
+      title: "Suggest Budget Alternatives",
+      description:
+        "Find expensive cards in an existing decklist (by Scryfall USD price) and suggest cheaper functional alternatives with estimated savings.",
+      inputSchema: {
+        decklist: z.string().describe("Decklist as newline-separated 'N Card Name' entries."),
+        format: formatSchema.optional(),
+        thresholdUsd: z.number().positive().optional().describe("Cards above this USD price get alternatives. Default 5."),
+        maxCards: z.number().int().min(1).max(20).optional()
+      }
+    },
+    async ({ decklist, format, thresholdUsd, maxCards }) =>
+      jsonText(await budgetAlternatives.suggest(decklist, { format, thresholdUsd, maxCards }))
+  );
+
+  if (deckStore) {
+    server.registerTool(
+      "save_deck",
+      {
+        title: "Save My Deck",
+        description: "Save a deck to personal storage. Requires authentication when the server has AUTH_TOKEN configured.",
+        inputSchema: {
+          name: z.string(),
+          format: formatSchema,
+          decklist: z.string().describe("Newline-separated 'N Card Name' entries."),
+          strategy: z.string().optional(),
+          colors: z.array(colorSchema).optional(),
+          notes: z.string().optional()
+        }
+      },
+      async ({ name, format, decklist, strategy, colors, notes }) => {
+        if (!auth.authenticated) return authRequiredError();
+        const now = new Date().toISOString();
+        const deck: SavedDeck = {
+          id: crypto.randomUUID(),
+          name,
+          format,
+          decklist,
+          strategy,
+          colors: colors ? normalizeColors(colors) : undefined,
+          notes,
+          createdAt: now,
+          updatedAt: now
+        };
+        await deckStore.save(auth.userId, deck);
+        return jsonText({ saved: true, deck: deckSummary(deck) });
+      }
+    );
+
+    server.registerTool(
+      "list_decks",
+      {
+        title: "List My Decks",
+        description: "List saved decks (id, name, format, updatedAt).",
+        inputSchema: {}
+      },
+      async () => {
+        if (!auth.authenticated) return authRequiredError();
+        return jsonText(await deckStore.list(auth.userId));
+      }
+    );
+
+    server.registerTool(
+      "get_deck",
+      {
+        title: "Get My Deck",
+        description: "Fetch a saved deck by id, including its full decklist.",
+        inputSchema: { id: z.string() }
+      },
+      async ({ id }) => {
+        if (!auth.authenticated) return authRequiredError();
+        const deck = await deckStore.get(auth.userId, id);
+        if (!deck) return { isError: true, content: [{ type: "text" as const, text: `Deck not found: ${id}` }] };
+        return jsonText(deck);
+      }
+    );
+
+    server.registerTool(
+      "update_deck",
+      {
+        title: "Update My Deck",
+        description:
+          "Edit a saved deck: rename, update notes, replace the whole decklist, or add/remove cards ('2 Lightning Bolt' or a bare card name for quantity 1).",
+        inputSchema: {
+          id: z.string(),
+          name: z.string().optional(),
+          notes: z.string().optional(),
+          decklist: z.string().optional().describe("Replaces the entire decklist when provided."),
+          addCards: z.array(z.string()).optional(),
+          removeCards: z.array(z.string()).optional()
+        }
+      },
+      async ({ id, name, notes, decklist, addCards, removeCards }) => {
+        if (!auth.authenticated) return authRequiredError();
+        const deck = await deckStore.get(auth.userId, id);
+        if (!deck) return { isError: true, content: [{ type: "text" as const, text: `Deck not found: ${id}` }] };
+
+        if (name !== undefined) deck.name = name;
+        if (notes !== undefined) deck.notes = notes;
+        if (decklist !== undefined) {
+          deck.decklist = decklist;
+        } else if (addCards?.length || removeCards?.length) {
+          const entries = new Map<string, number>();
+          for (const entry of parseDecklist(deck.decklist)) {
+            entries.set(entry.name, (entries.get(entry.name) ?? 0) + entry.quantity);
+          }
+          for (const line of addCards ?? []) {
+            const { quantity, name: cardName } = parseCardLine(line);
+            entries.set(cardName, (entries.get(cardName) ?? 0) + quantity);
+          }
+          for (const line of removeCards ?? []) {
+            const { quantity, name: cardName } = parseCardLine(line);
+            const existing = [...entries.keys()].find((key) => key.toLowerCase() === cardName.toLowerCase());
+            if (existing === undefined) continue;
+            const remaining = (entries.get(existing) ?? 0) - quantity;
+            if (remaining > 0) entries.set(existing, remaining);
+            else entries.delete(existing);
+          }
+          deck.decklist = serializeDecklist(entries);
+        }
+        deck.updatedAt = new Date().toISOString();
+        await deckStore.save(auth.userId, deck);
+        return jsonText({ updated: true, deck });
+      }
+    );
+
+    server.registerTool(
+      "delete_deck",
+      {
+        title: "Delete My Deck",
+        description: "Delete a saved deck by id.",
+        inputSchema: { id: z.string() }
+      },
+      async ({ id }) => {
+        if (!auth.authenticated) return authRequiredError();
+        const deleted = await deckStore.delete(auth.userId, id);
+        if (!deleted) return { isError: true, content: [{ type: "text" as const, text: `Deck not found: ${id}` }] };
+        return jsonText({ deleted: true, id });
+      }
+    );
+  }
 
   server.registerResource(
     "deckbuilding-frameworks",
