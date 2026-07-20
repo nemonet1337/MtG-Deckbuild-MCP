@@ -10,6 +10,9 @@ Scryfall API に接続し、AI モデルが Magic: The Gathering の実践的な
 - 土地、ランプ、ドロー、除去、シナジー、勝ち筋、サイドボードをカテゴリ分けして提案
 - MTGDecks、MTGGoldfish、MTGTop8 の大会結果ページを出典として返す参照ツール
 - 既存デッキリストの枚数、カード解決、リーガリティ、シングルトン問題の簡易分析
+- 対話形式でカラー・キーワード能力・プレイスタイルを聞き取りながら最適デッキを提案するウィザード
+- 既存デッキ中の高価カードに対する廉価な代替候補の提案(概算節約額付き)
+- マイデッキの保存・一覧・取得・編集・削除(Workers KV / ローカル JSON ファイル、ログイン不要)
 
 ## セットアップ
 
@@ -51,13 +54,21 @@ npm run dev:worker
 
 ### デプロイ
 
-初回のみ `npx wrangler login` で Cloudflare アカウントにログインしてください。
+初回のみ `npx wrangler login` で Cloudflare アカウントにログインし、マイデッキ保存用の KV ネームスペースを作成してください。
+
+```bash
+npx wrangler kv namespace create DECKS
+```
+
+出力された `id` を `wrangler.jsonc` の `kv_namespaces` の `id`(`REPLACE_WITH_KV_NAMESPACE_ID`)に貼り付けます。
 
 ```bash
 npm run deploy
 ```
 
-デプロイ後、`https://mtg-deckbuild-mcp.<あなたのサブドメイン>.workers.dev/mcp` が公開エンドポイントになります。認証なし(authless)で公開されるため、扱う情報が公開の MTG カードデータのみであることを踏まえて運用してください。
+デプロイ後、`https://mtg-deckbuild-mcp.<あなたのサブドメイン>.workers.dev/mcp` が公開エンドポイントになります。**本サーバーにはログイン・認証機能はなく、`/mcp` に到達できる人は誰でもすべてのツール(マイデッキの保存・編集・削除を含む)を実行できます。** マイデッキは KV 上の単一の共有領域に保存されるため、複数人が同じエンドポイントに接続する場合はデッキが相互に見える点に注意してください。
+
+stdio 版(`dist/index.js`)のデッキは `~/.mtg-deckbuild-mcp/decks/` に JSON ファイルとして保存されます。
 
 ### 自動デプロイ(GitHub Actions)
 
@@ -72,6 +83,8 @@ npm run deploy
 
 登録後は `npm run deploy` を手動実行する必要はなく、`main` への push だけでデプロイされます。
 
+> **注意**: `wrangler.jsonc` の KV ネームスペース `id` が実際の値に置き換えられるまで、自動デプロイは失敗します(Secret はデプロイをまたいで保持されるため、ワークフロー側の変更は不要です)。
+
 ### Claude Web でカスタムコネクタとして接続
 
 1. claude.ai の設定 → コネクタ → 「カスタムコネクタを追加」
@@ -84,21 +97,53 @@ npm run deploy
 2. 上記の `/mcp` で終わる URL を入力
 3. ツールが自動検出されれば接続完了です
 
+### CORS / CSP
+
+- **本サーバーへのアクセス**: `/mcp` への `POST`/`OPTIONS`/`GET` はすべて `Access-Control-Allow-Origin: *` を返します(`GET` は自前実装、`POST`/`OPTIONS` は `createMcpHandler`(`agents`パッケージ)が内部的に付与)。ブラウザ上で動作する MCP クライアントからも直接呼び出せることを `wrangler dev` + `curl -H "Origin: ..."` で確認済みです
+- **本サーバーから Scryfall への呼び出し**: すべて Cloudflare Workers / Node.js 上のサーバーサイド `fetch` で行っており、ブラウザを介さないため [Scryfall の CORS 要件](https://scryfall.com/docs/api)(`Origin` ヘッダーが呼び出し元ページのドメインと一致する必要がある、という制約)はそもそも適用されません
+- **画像を表示する UI を自作する場合**: 本サーバーの `imageUri` は `*.scryfall.io` を指すため、そのブラウザ画面で表示するなら Scryfall の CSP ガイドラインに従い `img-src *.scryfall.io` を、カード情報を直接 `api.scryfall.com` にも問い合わせるなら `connect-src api.scryfall.com` を、呼び出し側アプリケーションの CSP ヘッダーに追加してください(本 MCP サーバー自体は URL を返すだけで、ブラウザでの表示・追加リクエストは行いません)
+
 ### 既知の制約
 
-- Scryfall API 向けのレート制御(約90ms間隔)はインスタンス内メモリに依存しています。Workers はリクエストごとに別アイソレートで実行される場合があるため、ベストエフォートの制御になります。個人利用程度のトラフィックでは問題になりません。
+- Scryfall API 向けのレート制御・キャッシュはインスタンス内メモリに依存しています。Workers はリクエストごとに別アイソレートで実行される場合があるため、ベストエフォートの制御になります。個人利用程度のトラフィックでは問題になりません。
 - `find_tournament_decks` は1回の呼び出しで最大3件の外部サイトへ fetch します。
+- 大量のカード名解決(`analyze_deck`、`suggest_budget_alternatives`)は `/cards/named` を1枚ずつ逐次呼び出すため、上限枚数まで到達すると数秒〜十数秒かかることがあります。
 
 ## 公開ツール
 
 | Tool | 用途 |
 | --- | --- |
-| `search_cards` | Scryfall 構文、フォーマット、色、ギミックでカード検索 |
-| `get_card_details` | カード詳細、テキスト、価格、リーガリティ、Scryfall URL を取得 |
+| `search_cards` | Scryfall 構文、フォーマット、色、ギミックでカード検索(画像 URL・アーティスト名を含む) |
+| `get_card_details` | カード詳細、テキスト、価格、リーガリティ、画像 URL、アーティスト、Scryfall URL を取得 |
 | `recommend_cards` | デッキ方針に合うカードをカテゴリ別に提案 |
 | `build_deck` | 実践用のデッキシェルとデッキリストを生成 |
 | `analyze_deck` | 既存デッキリストを簡易検証 |
 | `find_tournament_decks` | 大会結果ページの引用スニペットと出典 URL を取得 |
+| `deck_wizard` | 対話形式でカラー・キーワード能力・プレイスタイル等を聞き取り、最適デッキを構築 |
+| `suggest_budget_alternatives` | デッキ中の高価カードを検出し、廉価な代替候補と概算節約額を提示 |
+| `save_deck` | マイデッキを保存 |
+| `list_decks` | 保存済みデッキの一覧 |
+| `get_deck` | 保存済みデッキの取得 |
+| `update_deck` | デッキ名・メモ・リストの編集、カードの追加/削除 |
+| `delete_deck` | 保存済みデッキの削除 |
+
+### デッキウィザードの使い方
+
+`deck_wizard` はステートレスな対話ツールです。引数なしで呼び出すと不足している設定(フォーマット、カラー、プレイスタイルなど)への質問が `questions` として返ります。クライアント(AI)はユーザーの回答を返却された `state` にマージして再度呼び出します。必須項目が揃うとデッキが構築されます。`format` と `colors` が揃っていれば `finalize: true` で即座に構築することもできます。
+
+### マイデッキの編集例
+
+```json
+{
+  "id": "<get_deck や list_decks で取得した id>",
+  "addCards": ["2 Lightning Bolt"],
+  "removeCards": ["Shock"]
+}
+```
+
+### カード画像の取得
+
+`search_cards`・`recommend_cards`・`build_deck`・`get_card_details` はいずれも Scryfall のカード JSON に埋め込まれている `image_uris` をそのまま返すため、[画像専用エンドポイント(`format=image`)](https://scryfall.com/docs/api)への追加リクエストは不要です。`get_card_details` は同エンドポイントと同じ `version`(`small`/`normal`/`large`/`png`/`art_crop`/`border_crop`、既定は `large`)と `face`(`front`/`back`)パラメータを受け付け、両面カードで裏面が存在しない場合は Scryfall の 422 相当のエラーメッセージを返します。`artist` も併せて返すため、`art_crop` を単独で表示する場合でもアーティスト名を同じ画面内に出せます(Scryfall の画像利用ガイドラインが要求する表示要件)。
 
 ## 使用例
 
@@ -128,9 +173,23 @@ Commander の例です。
 }
 ```
 
+## Scryfall API ガイドライン準拠
+
+本サーバーは [Scryfall API ドキュメント](https://scryfall.com/docs/api)の規約に従って実装されています。
+
+- **必須ヘッダー**: すべての Scryfall リクエストにアプリケーション固有の `User-Agent`(`src/config.ts` で一元管理、バージョン付き)と `Accept: application/json` を送信します
+- **レート制限**: [公式ガイドライン](https://scryfall.com/docs/api/rate-limits)が定めるエンドポイント別の上限に従い、`src/services/scryfall.ts` の `TieredRateLimiter` がパス名から自動判定した区分ごとに直列化します。`/cards/search`・`/cards/named`・`/cards/random`・`/cards/collection` は 2 req/秒(500ms間隔)、bulk data の manifest 系は 10 req/分(10,000ms間隔)、それ以外(autocomplete など)は 10 req/秒(100ms間隔)です。HTTP 429(30 秒間ブロックされる旨が明記されています)を受信した場合は `Retry-After` ヘッダーを尊重しつつ、なければ 1 秒から最大 30 秒まで倍加する指数バックオフで再試行します
+- **キャッシュ**: 公式ガイドラインが推奨する「最低 24 時間のキャッシュ」に従い、レスポンスを 24 時間インメモリキャッシュします(`/cards/random` は結果が意味を持たなくなるため対象外)
+- **エラーハンドリング**: [Error オブジェクト仕様](https://scryfall.com/docs/api/errors)(`{ object: "error", code, status, details, warnings }`)をそのままパースし、`ScryfallError` として `code`/`details`/`warnings` を呼び出し元に伝播します。生のレスポンス文字列を切り詰めて例外化する独自実装はしていません
+- **大量カード名解決**: 公式ガイドラインは「カード名・価格を大量かつ高速に引く場合は bulk data を使うこと」を求めています。本サーバーは個別デッキの分析・代替案提案という用途に限定されるため `/cards/named` の逐次呼び出しで十分と判断し、1 回の呼び出しで解決するカード枚数に上限(`analyze_deck` は 120 枚、`suggest_budget_alternatives` は高額カード最大 10 枚)を設けています。ログイン不要のツールなので、すべてのユーザーが同じキャッシュ・レート制御を共有します
+- **画像フォーマット**: [Request Formats](https://scryfall.com/docs/api)が定める `image` 形式(`version`: small/normal/large/png/art_crop/border_crop、`face`: front/back)は、通常の JSON レスポンスに埋め込まれた `image_uris` から同等の URL を組み立てて返すため、別リクエストは発行しません。裏面画像を明示的に要求されたが両面カードでない場合は Scryfall の 422 相当のエラーを返します
+- **画像利用ガイドライン**: カード画像は Scryfall から取得した URL をそのまま返すのみで、加工・クロップ・著作権表示の除去・自前のロゴ付与は一切行いません。`art_crop` を単独で提示する画面では `artist` フィールドを同じレスポンス内に含め、アーティスト名を確認できるようにしています
+- **CORS / CSP**: [CORS and CSP](https://scryfall.com/docs/api) の要件はブラウザ上の client-side JavaScript から直接 Scryfall を呼ぶ場合に適用されます。本サーバーはサーバーサイドの `fetch` のみで Scryfall を呼び出すため対象外ですが、本サーバー自体のエンドポイント(`/mcp`)は逆にブラウザ上の MCP クライアントから直接呼ばれる可能性があるため `Access-Control-Allow-Origin` を適切に返しています(詳細は上記デプロイ節参照)
+- **非ペイウォール**: すべてのツールがログイン・認証なしで利用できます
+- **付加価値**: 本ソフトウェアは Scryfall データの単純な再配布ではなく、デッキ構築・分析・推奨という付加価値を提供します
+
 ## 出典と注意
 
 - カードデータ、画像 URL、価格、リーガリティは Scryfall API を参照します。
-- Scryfall API の要件に従い、`User-Agent` と `Accept` ヘッダーを送信します。
 - 大会結果の参照は MTGDecks、MTGGoldfish、MTGTop8 の公開ページ URL と取得可能なスニペットを返します。
 - 生成されたリストは構築のたたき台です。大会参加前に最新禁止改定、イベント規定、ローカルメタに合わせて調整してください。

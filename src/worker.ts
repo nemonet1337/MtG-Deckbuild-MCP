@@ -1,7 +1,11 @@
 import { createMcpHandler } from "agents/mcp";
 import { createServer } from "./server.js";
+import { KVDeckStore } from "./services/kvDeckStore.js";
 
-interface Env {}
+interface Env {
+  /** KV namespace for saved decks. */
+  DECKS?: KVNamespace;
+}
 
 export default {
   fetch: async (request: Request, env: Env, ctx: ExecutionContext) => {
@@ -18,6 +22,9 @@ export default {
         headers: { Allow: "POST, DELETE, OPTIONS", "Access-Control-Allow-Origin": "*" }
       });
     }
-    return createMcpHandler(createServer(), { route: "/mcp", enableJsonResponse: true })(request, env, ctx);
+
+    const deckStore = env.DECKS ? new KVDeckStore(env.DECKS) : null;
+    const server = createServer({ deckStore });
+    return createMcpHandler(server, { route: "/mcp", enableJsonResponse: true })(request, env, ctx);
   }
 } satisfies ExportedHandler<Env>;

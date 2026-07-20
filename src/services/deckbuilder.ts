@@ -1,5 +1,5 @@
 import { CostModel, DeckBuildRequest, DeckBuildResult, DeckCard, FORMAT_LABELS, isSingletonFormat, MtgColor, MtgFormat, POWER_LEVELS, PowerLevel, ScryfallCard } from "../types/mtg.js";
-import { colorIdentityQuery, formatLegalityQuery, mechanicQuery, ScryfallClient } from "./scryfall.js";
+import { cardArtist, cardImageUri, colorIdentityQuery, formatLegalityQuery, mechanicQuery, ScryfallClient } from "./scryfall.js";
 
 const BASIC_LANDS: Record<Exclude<MtgColor, "C">, string> = {
   W: "Plains",
@@ -113,7 +113,9 @@ function toDeckCard(card: ScryfallCard, quantity: number, category: string, role
     rationale,
     scryfallUri: card.scryfall_uri,
     priceUsd: card.prices?.usd ?? null,
-    wildcardCost: rarityToWildcardCost(card.rarity) * quantity
+    wildcardCost: rarityToWildcardCost(card.rarity) * quantity,
+    imageUri: cardImageUri(card),
+    artist: cardArtist(card)
   };
 }
 

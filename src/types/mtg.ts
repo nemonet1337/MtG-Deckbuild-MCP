@@ -69,11 +69,14 @@ export type ScryfallCard = {
   rarity?: string;
   set_name?: string;
   prices?: Record<string, string | null>;
+  /** Keyed by version: small, normal, large, png, art_crop, border_crop. Absent on the root object for double-faced cards; use card_faces instead. */
   image_uris?: Record<string, string>;
   scryfall_uri?: string;
   edhrec_rank?: number;
   keywords?: string[];
   produced_mana?: string[];
+  /** Required alongside art_crop images per Scryfall's image usage guidelines. */
+  artist?: string;
   card_faces?: Array<{
     name?: string;
     mana_cost?: string;
@@ -81,8 +84,12 @@ export type ScryfallCard = {
     oracle_text?: string;
     colors?: string[];
     image_uris?: Record<string, string>;
+    artist?: string;
   }>;
 };
+
+export const IMAGE_VERSIONS = ["small", "normal", "large", "png", "art_crop", "border_crop"] as const;
+export type ImageVersion = (typeof IMAGE_VERSIONS)[number];
 
 export type ScryfallList<T> = {
   object: "list";
@@ -101,6 +108,8 @@ export type DeckCard = {
   scryfallUri?: string;
   priceUsd?: string | null;
   wildcardCost?: number;
+  imageUri?: string;
+  artist?: string;
 };
 
 export type DeckBuildRequest = {
