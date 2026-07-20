@@ -107,8 +107,8 @@ stdio 版(`dist/index.js`)のデッキは `~/.mtg-deckbuild-mcp/decks/` に JSON
 
 | Tool | 用途 |
 | --- | --- |
-| `search_cards` | Scryfall 構文、フォーマット、色、ギミックでカード検索 |
-| `get_card_details` | カード詳細、テキスト、価格、リーガリティ、Scryfall URL を取得 |
+| `search_cards` | Scryfall 構文、フォーマット、色、ギミックでカード検索(画像 URL・アーティスト名を含む) |
+| `get_card_details` | カード詳細、テキスト、価格、リーガリティ、画像 URL、アーティスト、Scryfall URL を取得 |
 | `recommend_cards` | デッキ方針に合うカードをカテゴリ別に提案 |
 | `build_deck` | 実践用のデッキシェルとデッキリストを生成 |
 | `analyze_deck` | 既存デッキリストを簡易検証 |
@@ -134,6 +134,10 @@ stdio 版(`dist/index.js`)のデッキは `~/.mtg-deckbuild-mcp/decks/` に JSON
   "removeCards": ["Shock"]
 }
 ```
+
+### カード画像の取得
+
+`search_cards`・`recommend_cards`・`build_deck`・`get_card_details` はいずれも Scryfall のカード JSON に埋め込まれている `image_uris` をそのまま返すため、[画像専用エンドポイント(`format=image`)](https://scryfall.com/docs/api)への追加リクエストは不要です。`get_card_details` は同エンドポイントと同じ `version`(`small`/`normal`/`large`/`png`/`art_crop`/`border_crop`、既定は `large`)と `face`(`front`/`back`)パラメータを受け付け、両面カードで裏面が存在しない場合は Scryfall の 422 相当のエラーメッセージを返します。`artist` も併せて返すため、`art_crop` を単独で表示する場合でもアーティスト名を同じ画面内に出せます(Scryfall の画像利用ガイドラインが要求する表示要件)。
 
 ## 使用例
 
@@ -172,6 +176,8 @@ Commander の例です。
 - **キャッシュ**: 公式ガイドラインが推奨する「最低 24 時間のキャッシュ」に従い、レスポンスを 24 時間インメモリキャッシュします(`/cards/random` は結果が意味を持たなくなるため対象外)
 - **エラーハンドリング**: [Error オブジェクト仕様](https://scryfall.com/docs/api/errors)(`{ object: "error", code, status, details, warnings }`)をそのままパースし、`ScryfallError` として `code`/`details`/`warnings` を呼び出し元に伝播します。生のレスポンス文字列を切り詰めて例外化する独自実装はしていません
 - **大量カード名解決**: 公式ガイドラインは「カード名・価格を大量かつ高速に引く場合は bulk data を使うこと」を求めています。本サーバーは個別デッキの分析・代替案提案という用途に限定されるため `/cards/named` の逐次呼び出しで十分と判断し、1 回の呼び出しで解決するカード枚数に上限(`analyze_deck` は 120 枚、`suggest_budget_alternatives` は高額カード最大 10 枚)を設けています。ログイン不要のツールなので、すべてのユーザーが同じキャッシュ・レート制御を共有します
+- **画像フォーマット**: [Request Formats](https://scryfall.com/docs/api)が定める `image` 形式(`version`: small/normal/large/png/art_crop/border_crop、`face`: front/back)は、通常の JSON レスポンスに埋め込まれた `image_uris` から同等の URL を組み立てて返すため、別リクエストは発行しません。裏面画像を明示的に要求されたが両面カードでない場合は Scryfall の 422 相当のエラーを返します
+- **画像利用ガイドライン**: カード画像は Scryfall から取得した URL をそのまま返すのみで、加工・クロップ・著作権表示の除去・自前のロゴ付与は一切行いません。`art_crop` を単独で提示する画面では `artist` フィールドを同じレスポンス内に含め、アーティスト名を確認できるようにしています
 - **非ペイウォール**: すべてのツールがログイン・認証なしで利用できます
 - **付加価値**: 本ソフトウェアは Scryfall データの単純な再配布ではなく、デッキ構築・分析・推奨という付加価値を提供します
 

@@ -1,5 +1,5 @@
 import { USER_AGENT } from "../config.js";
-import { ScryfallCard, ScryfallList, MtgColor, MtgFormat } from "../types/mtg.js";
+import { ImageVersion, ScryfallCard, ScryfallList, MtgColor, MtgFormat } from "../types/mtg.js";
 
 const SCRYFALL_API = "https://api.scryfall.com";
 const MAX_BANNED_LIST_RESULTS = 200;
@@ -272,4 +272,29 @@ export function summarizeCard(card: ScryfallCard): string {
   const oracle = card.oracle_text ?? faces ?? "";
   const price = card.prices?.usd ? ` / $${card.prices.usd}` : "";
   return `${card.name} ${card.mana_cost ?? ""} — ${card.type_line ?? ""}${price}\n${oracle}\n${card.scryfall_uri ?? ""}`.trim();
+}
+
+function faceImageUris(card: ScryfallCard, face: "front" | "back"): Record<string, string> | undefined {
+  if (face === "back") return card.card_faces?.[1]?.image_uris;
+  return card.image_uris ?? card.card_faces?.[0]?.image_uris;
+}
+
+/**
+ * Resolves a card image URL from the already-fetched JSON card object, mirroring
+ * the `version` (default "large") and `face` parameters of Scryfall's format=image
+ * redirect endpoint (scryfall.com/docs/api Request Formats) without a second request.
+ */
+export function cardImageUri(card: ScryfallCard, opts: { version?: ImageVersion; face?: "front" | "back" } = {}): string | undefined {
+  return faceImageUris(card, opts.face ?? "front")?.[opts.version ?? "large"];
+}
+
+/** Mirrors the 422 Scryfall returns for format=image&face=back on a card with no back face. */
+export function hasBackFace(card: ScryfallCard): boolean {
+  const back = card.card_faces?.[1];
+  return Boolean(back && (back.image_uris ?? back.oracle_text));
+}
+
+/** Scryfall's image guidelines require crediting the artist wherever an art_crop image is shown. */
+export function cardArtist(card: ScryfallCard): string | undefined {
+  return card.artist ?? card.card_faces?.[0]?.artist;
 }

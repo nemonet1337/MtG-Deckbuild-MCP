@@ -6,9 +6,9 @@ import { DeckAnalyzerService, parseDecklist } from "./services/deckAnalyzer.js";
 import { DeckBuilderService } from "./services/deckbuilder.js";
 import { DeckStore, SavedDeck, deckSummary } from "./services/deckStore.js";
 import { PLAYSTYLES, runWizard, WizardState } from "./services/deckWizard.js";
-import { colorIdentityQuery, formatLegalityQuery, mechanicQuery, ScryfallClient, summarizeCard } from "./services/scryfall.js";
+import { cardArtist, cardImageUri, colorIdentityQuery, formatLegalityQuery, hasBackFace, mechanicQuery, ScryfallClient, summarizeCard } from "./services/scryfall.js";
 import { getTournamentReferences } from "./services/tournamentSources.js";
-import { BUDGET_TIERS, COST_MODELS, CostModel, DeckBuildRequest, MTG_COLORS, MTG_FORMATS, MtgColor, MtgFormat, normalizeColors, POWER_LEVELS } from "./types/mtg.js";
+import { BUDGET_TIERS, COST_MODELS, CostModel, DeckBuildRequest, IMAGE_VERSIONS, MTG_COLORS, MTG_FORMATS, MtgColor, MtgFormat, normalizeColors, POWER_LEVELS } from "./types/mtg.js";
 
 export interface ServerDeps {
   deckStore: DeckStore | null;
@@ -136,21 +136,39 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
         legalities: card.legalities,
         edhrecRank: card.edhrec_rank,
         priceUsd: card.prices?.usd,
-        scryfallUri: card.scryfall_uri
+        scryfallUri: card.scryfall_uri,
+        imageUri: cardImageUri(card),
+        artist: cardArtist(card)
       })));
     }
   );
+
+  const imageVersionSchema = z.enum(IMAGE_VERSIONS);
 
   server.registerTool(
     "get_card_details",
     {
       title: "Get Card Details",
-      description: "Resolve a card name with Scryfall fuzzy matching and return rules text, legality, pricing, and links.",
+      description:
+        "Resolve a card name with Scryfall fuzzy matching and return rules text, legality, pricing, an image URL, artist, and links.",
       inputSchema: {
-        name: z.string()
+        name: z.string(),
+        imageVersion: imageVersionSchema.optional().describe("Image size/crop to return (small/normal/large/png/art_crop/border_crop). Default large."),
+        face: z.enum(["front", "back"]).optional().describe("Which face to use for double-faced cards. Default front.")
       }
     },
-    async ({ name }) => text(summarizeCard(await client.namedCard(name)))
+    async ({ name, imageVersion, face }) => {
+      const card = await client.namedCard(name);
+      if (face === "back" && !hasBackFace(card)) {
+        return { isError: true, content: [{ type: "text" as const, text: `${card.name} does not have a back face.` }] };
+      }
+      const lines = [summarizeCard(card)];
+      const imageUri = cardImageUri(card, { version: imageVersion, face });
+      if (imageUri) lines.push(`Image (${imageVersion ?? "large"}${face === "back" ? ", back face" : ""}): ${imageUri}`);
+      const artist = cardArtist(card);
+      if (artist) lines.push(`Artist: ${artist}`);
+      return text(lines.join("\n"));
+    }
   );
 
   server.registerTool(
@@ -170,7 +188,9 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
           oracleText: card.oracle_text,
           priceUsd: card.prices?.usd,
           edhrecRank: card.edhrec_rank,
-          scryfallUri: card.scryfall_uri
+          scryfallUri: card.scryfall_uri,
+          imageUri: cardImageUri(card),
+          artist: cardArtist(card)
         }))
       ])));
     }
