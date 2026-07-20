@@ -1,6 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { AuthContext } from "./auth.js";
 import { APP_VERSION } from "./config.js";
 import { BudgetAlternativesService } from "./services/budgetAlternatives.js";
 import { DeckAnalyzerService, parseDecklist } from "./services/deckAnalyzer.js";
@@ -12,14 +11,15 @@ import { getTournamentReferences } from "./services/tournamentSources.js";
 import { BUDGET_TIERS, COST_MODELS, CostModel, DeckBuildRequest, MTG_COLORS, MTG_FORMATS, MtgColor, MtgFormat, normalizeColors, POWER_LEVELS } from "./types/mtg.js";
 
 export interface ServerDeps {
-  auth: AuthContext;
   deckStore: DeckStore | null;
 }
 
 const DEFAULT_DEPS: ServerDeps = {
-  auth: { authenticated: true, userId: "local" },
   deckStore: null
 };
+
+// Single-tenant: there is no login, so all saved decks live under one shared user bucket.
+const DECK_OWNER = "default";
 
 const formatSchema = z.enum(MTG_FORMATS);
 const colorSchema = z.enum(MTG_COLORS);
@@ -84,16 +84,6 @@ const wizardStateSchema = z.object({
   skippedOptional: z.boolean().optional()
 });
 
-function authRequiredError() {
-  return {
-    isError: true,
-    content: [{
-      type: "text" as const,
-      text: "Authentication required: send 'Authorization: Bearer <AUTH_TOKEN>' to use my-deck tools."
-    }]
-  };
-}
-
 function parseCardLine(line: string): { quantity: number; name: string } {
   const match = line.trim().match(/^(\d+)[xX]?\s+(.+)$/);
   if (match) return { quantity: Number(match[1]), name: match[2].trim() };
@@ -105,7 +95,7 @@ function serializeDecklist(entries: Map<string, number>): string {
 }
 
 export function createServer(deps?: Partial<ServerDeps>): McpServer {
-  const { auth, deckStore } = { ...DEFAULT_DEPS, ...deps };
+  const { deckStore } = { ...DEFAULT_DEPS, ...deps };
   const client = new ScryfallClient();
   const deckBuilder = new DeckBuilderService(client);
   const deckAnalyzer = new DeckAnalyzerService(client);
@@ -266,7 +256,7 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
       "save_deck",
       {
         title: "Save My Deck",
-        description: "Save a deck to personal storage. Requires authentication when the server has AUTH_TOKEN configured.",
+        description: "Save a deck to personal storage.",
         inputSchema: {
           name: z.string(),
           format: formatSchema,
@@ -277,7 +267,6 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
         }
       },
       async ({ name, format, decklist, strategy, colors, notes }) => {
-        if (!auth.authenticated) return authRequiredError();
         const now = new Date().toISOString();
         const deck: SavedDeck = {
           id: crypto.randomUUID(),
@@ -290,7 +279,7 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
           createdAt: now,
           updatedAt: now
         };
-        await deckStore.save(auth.userId, deck);
+        await deckStore.save(DECK_OWNER, deck);
         return jsonText({ saved: true, deck: deckSummary(deck) });
       }
     );
@@ -302,10 +291,7 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
         description: "List saved decks (id, name, format, updatedAt).",
         inputSchema: {}
       },
-      async () => {
-        if (!auth.authenticated) return authRequiredError();
-        return jsonText(await deckStore.list(auth.userId));
-      }
+      async () => jsonText(await deckStore.list(DECK_OWNER))
     );
 
     server.registerTool(
@@ -316,8 +302,7 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
         inputSchema: { id: z.string() }
       },
       async ({ id }) => {
-        if (!auth.authenticated) return authRequiredError();
-        const deck = await deckStore.get(auth.userId, id);
+        const deck = await deckStore.get(DECK_OWNER, id);
         if (!deck) return { isError: true, content: [{ type: "text" as const, text: `Deck not found: ${id}` }] };
         return jsonText(deck);
       }
@@ -339,8 +324,7 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
         }
       },
       async ({ id, name, notes, decklist, addCards, removeCards }) => {
-        if (!auth.authenticated) return authRequiredError();
-        const deck = await deckStore.get(auth.userId, id);
+        const deck = await deckStore.get(DECK_OWNER, id);
         if (!deck) return { isError: true, content: [{ type: "text" as const, text: `Deck not found: ${id}` }] };
 
         if (name !== undefined) deck.name = name;
@@ -367,7 +351,7 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
           deck.decklist = serializeDecklist(entries);
         }
         deck.updatedAt = new Date().toISOString();
-        await deckStore.save(auth.userId, deck);
+        await deckStore.save(DECK_OWNER, deck);
         return jsonText({ updated: true, deck });
       }
     );
@@ -380,8 +364,7 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
         inputSchema: { id: z.string() }
       },
       async ({ id }) => {
-        if (!auth.authenticated) return authRequiredError();
-        const deleted = await deckStore.delete(auth.userId, id);
+        const deleted = await deckStore.delete(DECK_OWNER, id);
         if (!deleted) return { isError: true, content: [{ type: "text" as const, text: `Deck not found: ${id}` }] };
         return jsonText({ deleted: true, id });
       }

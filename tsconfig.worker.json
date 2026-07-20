@@ -11,6 +11,6 @@
     "noEmit": true,
     "types": ["@cloudflare/workers-types"]
   },
-  "include": ["src/worker.ts", "src/server.ts", "src/auth.ts", "src/config.ts", "src/services/**/*.ts", "src/types/**/*.ts"],
+  "include": ["src/worker.ts", "src/server.ts", "src/config.ts", "src/services/**/*.ts", "src/types/**/*.ts"],
   "exclude": ["src/services/fileDeckStore.ts"]
 }
