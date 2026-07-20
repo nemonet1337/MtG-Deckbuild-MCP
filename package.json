@@ -38,7 +38,7 @@
   },
   "homepage": "https://github.com/nemonet1337/MtG-Deckbuild-MCP#readme",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.23.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "agents": "^0.3.10",
     "ai": "^5.0.116",
     "zod": "^4.4.3"
