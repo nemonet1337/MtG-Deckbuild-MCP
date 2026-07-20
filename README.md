@@ -97,6 +97,12 @@ stdio 版(`dist/index.js`)のデッキは `~/.mtg-deckbuild-mcp/decks/` に JSON
 2. 上記の `/mcp` で終わる URL を入力
 3. ツールが自動検出されれば接続完了です
 
+### CORS / CSP
+
+- **本サーバーへのアクセス**: `/mcp` への `POST`/`OPTIONS`/`GET` はすべて `Access-Control-Allow-Origin: *` を返します(`GET` は自前実装、`POST`/`OPTIONS` は `createMcpHandler`(`agents`パッケージ)が内部的に付与)。ブラウザ上で動作する MCP クライアントからも直接呼び出せることを `wrangler dev` + `curl -H "Origin: ..."` で確認済みです
+- **本サーバーから Scryfall への呼び出し**: すべて Cloudflare Workers / Node.js 上のサーバーサイド `fetch` で行っており、ブラウザを介さないため [Scryfall の CORS 要件](https://scryfall.com/docs/api)(`Origin` ヘッダーが呼び出し元ページのドメインと一致する必要がある、という制約)はそもそも適用されません
+- **画像を表示する UI を自作する場合**: 本サーバーの `imageUri` は `*.scryfall.io` を指すため、そのブラウザ画面で表示するなら Scryfall の CSP ガイドラインに従い `img-src *.scryfall.io` を、カード情報を直接 `api.scryfall.com` にも問い合わせるなら `connect-src api.scryfall.com` を、呼び出し側アプリケーションの CSP ヘッダーに追加してください(本 MCP サーバー自体は URL を返すだけで、ブラウザでの表示・追加リクエストは行いません)
+
 ### 既知の制約
 
 - Scryfall API 向けのレート制御・キャッシュはインスタンス内メモリに依存しています。Workers はリクエストごとに別アイソレートで実行される場合があるため、ベストエフォートの制御になります。個人利用程度のトラフィックでは問題になりません。
@@ -178,6 +184,7 @@ Commander の例です。
 - **大量カード名解決**: 公式ガイドラインは「カード名・価格を大量かつ高速に引く場合は bulk data を使うこと」を求めています。本サーバーは個別デッキの分析・代替案提案という用途に限定されるため `/cards/named` の逐次呼び出しで十分と判断し、1 回の呼び出しで解決するカード枚数に上限(`analyze_deck` は 120 枚、`suggest_budget_alternatives` は高額カード最大 10 枚)を設けています。ログイン不要のツールなので、すべてのユーザーが同じキャッシュ・レート制御を共有します
 - **画像フォーマット**: [Request Formats](https://scryfall.com/docs/api)が定める `image` 形式(`version`: small/normal/large/png/art_crop/border_crop、`face`: front/back)は、通常の JSON レスポンスに埋め込まれた `image_uris` から同等の URL を組み立てて返すため、別リクエストは発行しません。裏面画像を明示的に要求されたが両面カードでない場合は Scryfall の 422 相当のエラーを返します
 - **画像利用ガイドライン**: カード画像は Scryfall から取得した URL をそのまま返すのみで、加工・クロップ・著作権表示の除去・自前のロゴ付与は一切行いません。`art_crop` を単独で提示する画面では `artist` フィールドを同じレスポンス内に含め、アーティスト名を確認できるようにしています
+- **CORS / CSP**: [CORS and CSP](https://scryfall.com/docs/api) の要件はブラウザ上の client-side JavaScript から直接 Scryfall を呼ぶ場合に適用されます。本サーバーはサーバーサイドの `fetch` のみで Scryfall を呼び出すため対象外ですが、本サーバー自体のエンドポイント(`/mcp`)は逆にブラウザ上の MCP クライアントから直接呼ばれる可能性があるため `Access-Control-Allow-Origin` を適切に返しています(詳細は上記デプロイ節参照)
 - **非ペイウォール**: すべてのツールがログイン・認証なしで利用できます
 - **付加価値**: 本ソフトウェアは Scryfall データの単純な再配布ではなく、デッキ構築・分析・推奨という付加価値を提供します
 
