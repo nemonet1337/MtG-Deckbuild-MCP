@@ -19,11 +19,14 @@ export const MTG_COLORS = ["W", "U", "B", "R", "G", "C"] as const;
 
 export const BUDGET_TIERS = ["any", "budget", "mid", "premium"] as const;
 
+export const COST_MODELS = ["paper", "arena"] as const;
+
 export const POWER_LEVELS = ["casual", "focused", "competitive", "cedh"] as const;
 
 export type MtgFormat = (typeof MTG_FORMATS)[number];
 export type MtgColor = (typeof MTG_COLORS)[number];
 export type BudgetTier = (typeof BUDGET_TIERS)[number];
+export type CostModel = (typeof COST_MODELS)[number];
 export type PowerLevel = (typeof POWER_LEVELS)[number];
 
 export const FORMAT_LABELS: Record<MtgFormat, string> = {
@@ -97,6 +100,7 @@ export type DeckCard = {
   rationale: string;
   scryfallUri?: string;
   priceUsd?: string | null;
+  wildcardCost?: number;
 };
 
 export type DeckBuildRequest = {
@@ -108,6 +112,7 @@ export type DeckBuildRequest = {
   mustInclude?: string[];
   budget?: BudgetTier;
   powerLevel?: PowerLevel;
+  costModel?: CostModel;
   includeSideboard?: boolean;
 };
 
@@ -121,4 +126,5 @@ export type DeckBuildResult = {
   citations: Array<{ title: string; url: string }>;
   notes: string[];
   decklist: string;
+  totalWildcardCost?: number;
 };

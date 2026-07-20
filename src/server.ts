@@ -4,12 +4,13 @@ import { DeckAnalyzerService } from "./services/deckAnalyzer.js";
 import { DeckBuilderService } from "./services/deckbuilder.js";
 import { colorIdentityQuery, formatLegalityQuery, mechanicQuery, ScryfallClient, summarizeCard } from "./services/scryfall.js";
 import { getTournamentReferences } from "./services/tournamentSources.js";
-import { BUDGET_TIERS, DeckBuildRequest, MTG_COLORS, MTG_FORMATS, MtgColor, MtgFormat, normalizeColors, POWER_LEVELS } from "./types/mtg.js";
+import { BUDGET_TIERS, COST_MODELS, CostModel, DeckBuildRequest, MTG_COLORS, MTG_FORMATS, MtgColor, MtgFormat, normalizeColors, POWER_LEVELS } from "./types/mtg.js";
 
 const formatSchema = z.enum(MTG_FORMATS);
 const colorSchema = z.enum(MTG_COLORS);
 const budgetSchema = z.enum(BUDGET_TIERS);
 const powerLevelSchema = z.enum(POWER_LEVELS);
+const costModelSchema = z.enum(COST_MODELS);
 
 const deckPlanSchema = {
   format: formatSchema,
@@ -17,7 +18,8 @@ const deckPlanSchema = {
   strategy: z.string().describe("Archetype or game plan, e.g. Azorius Control, Rakdos Sacrifice, Simic Landfall."),
   mechanics: z.array(z.string()).optional(),
   budget: budgetSchema.optional(),
-  powerLevel: powerLevelSchema.optional()
+  powerLevel: powerLevelSchema.optional(),
+  costModel: costModelSchema.optional()
 };
 
 function jsonText(data: unknown) {
@@ -41,6 +43,7 @@ function requestFromArgs(args: {
   mustInclude?: string[];
   budget?: DeckBuildRequest["budget"];
   powerLevel?: DeckBuildRequest["powerLevel"];
+  costModel?: DeckBuildRequest["costModel"];
   includeSideboard?: boolean;
 }): DeckBuildRequest {
   return {
@@ -48,6 +51,7 @@ function requestFromArgs(args: {
     colors: normalizeColors(args.colors),
     budget: args.budget ?? "any",
     powerLevel: args.powerLevel ?? "focused",
+    costModel: args.costModel ?? "paper",
     includeSideboard: args.includeSideboard ?? true
   };
 }
