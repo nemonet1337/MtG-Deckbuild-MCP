@@ -168,7 +168,7 @@ Commander の例です。
 本サーバーは [Scryfall API ドキュメント](https://scryfall.com/docs/api)の規約に従って実装されています。
 
 - **必須ヘッダー**: すべての Scryfall リクエストにアプリケーション固有の `User-Agent`(`src/config.ts` で一元管理、バージョン付き)と `Accept: application/json` を送信します
-- **レート制限**: [公式ガイドライン](https://scryfall.com/docs/api/rate-limits)が定める「リクエスト間 50〜100ms、10 req/秒未満」に従い、`src/services/scryfall.ts` の `RateLimiter` が全エンドポイント一律 100ms 間隔で直列化します。HTTP 429(30 秒間ブロックされる旨が明記されています)を受信した場合は `Retry-After` ヘッダーを尊重しつつ、なければ 1 秒から最大 30 秒まで倍加する指数バックオフで再試行します
+- **レート制限**: [公式ガイドライン](https://scryfall.com/docs/api/rate-limits)が定めるエンドポイント別の上限に従い、`src/services/scryfall.ts` の `TieredRateLimiter` がパス名から自動判定した区分ごとに直列化します。`/cards/search`・`/cards/named`・`/cards/random`・`/cards/collection` は 2 req/秒(500ms間隔)、bulk data の manifest 系は 10 req/分(10,000ms間隔)、それ以外(autocomplete など)は 10 req/秒(100ms間隔)です。HTTP 429(30 秒間ブロックされる旨が明記されています)を受信した場合は `Retry-After` ヘッダーを尊重しつつ、なければ 1 秒から最大 30 秒まで倍加する指数バックオフで再試行します
 - **キャッシュ**: 公式ガイドラインが推奨する「最低 24 時間のキャッシュ」に従い、レスポンスを 24 時間インメモリキャッシュします(`/cards/random` は結果が意味を持たなくなるため対象外)
 - **エラーハンドリング**: [Error オブジェクト仕様](https://scryfall.com/docs/api/errors)(`{ object: "error", code, status, details, warnings }`)をそのままパースし、`ScryfallError` として `code`/`details`/`warnings` を呼び出し元に伝播します。生のレスポンス文字列を切り詰めて例外化する独自実装はしていません
 - **大量カード名解決**: 公式ガイドラインは「カード名・価格を大量かつ高速に引く場合は bulk data を使うこと」を求めています。本サーバーは個別デッキの分析・代替案提案という用途に限定されるため `/cards/named` の逐次呼び出しで十分と判断し、1 回の呼び出しで解決するカード枚数に上限(`analyze_deck` は 120 枚、`suggest_budget_alternatives` は高額カード最大 10 枚)を設けています。ログイン不要のツールなので、すべてのユーザーが同じキャッシュ・レート制御を共有します

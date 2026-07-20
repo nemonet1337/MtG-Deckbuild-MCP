@@ -6,9 +6,25 @@ const MAX_BANNED_LIST_RESULTS = 200;
 
 type BannedListCache = Record<MtgFormat, Set<string>>;
 
-// Scryfall's documented guidance (scryfall.com/docs/api/rate-limits) is a flat
-// 50-100ms delay between requests (under 10 req/s), not per-endpoint tiers.
-const REQUEST_INTERVAL_MS = 100;
+// Per-endpoint rate limits (scryfall.com/docs/api/rate-limits and the individual
+// endpoint doc pages): the card-lookup endpoints cap at 2/sec (500ms), the bulk
+// data manifest at 10/min (10,000ms), and everything else at 10/sec (100ms).
+type Tier = "heavy" | "manifest" | "light";
+
+const TIER_INTERVAL_MS: Record<Tier, number> = {
+  heavy: 500,
+  manifest: 10000,
+  light: 100
+};
+
+const HEAVY_PATH_PREFIXES = ["/cards/search", "/cards/named", "/cards/random", "/cards/collection"];
+const MANIFEST_PATH_PREFIXES = ["/bulk-data", "/cards/manifest"];
+
+function tierFor(pathname: string): Tier {
+  if (MANIFEST_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return "manifest";
+  if (HEAVY_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return "heavy";
+  return "light";
+}
 
 const MAX_RETRIES = 3;
 // A 429 response blocks the caller for 30 seconds per Scryfall's docs; cap
@@ -30,21 +46,21 @@ interface CacheEntry {
   value: unknown;
 }
 
-/** Serializes requests so consecutive calls never run closer than REQUEST_INTERVAL_MS apart. */
-class RateLimiter {
-  private queue: Promise<void> = Promise.resolve();
-  private lastRequestAt = 0;
+/** Serializes requests per tier so consecutive calls in the same tier never run closer than its documented interval. */
+class TieredRateLimiter {
+  private queues: Record<Tier, Promise<void>> = { heavy: Promise.resolve(), manifest: Promise.resolve(), light: Promise.resolve() };
+  private lastRequestAt: Record<Tier, number> = { heavy: 0, manifest: 0, light: 0 };
 
-  async wait(): Promise<void> {
-    const turn = this.queue.then(async () => {
-      const elapsed = Date.now() - this.lastRequestAt;
-      const remaining = REQUEST_INTERVAL_MS - elapsed;
+  async wait(tier: Tier): Promise<void> {
+    const turn = this.queues[tier].then(async () => {
+      const elapsed = Date.now() - this.lastRequestAt[tier];
+      const remaining = TIER_INTERVAL_MS[tier] - elapsed;
       if (remaining > 0) {
         await new Promise((resolve) => setTimeout(resolve, remaining));
       }
-      this.lastRequestAt = Date.now();
+      this.lastRequestAt[tier] = Date.now();
     });
-    this.queue = turn;
+    this.queues[tier] = turn;
     return turn;
   }
 }
@@ -161,7 +177,7 @@ export function mechanicQuery(mechanics: string[] = []): string {
 }
 
 export class ScryfallClient {
-  private rateLimiter = new RateLimiter();
+  private rateLimiter = new TieredRateLimiter();
   private cache = new InMemoryCache();
   private bannedLists: BannedListCache = {} as BannedListCache;
 
@@ -170,11 +186,12 @@ export class ScryfallClient {
     const cached = cacheKey !== null ? this.cache.get(cacheKey) : undefined;
     if (cached !== undefined) return cached as T;
 
+    const tier = tierFor(new URL(url).pathname);
     let attempt = 0;
     let backoffMs = 1000;
 
     while (true) {
-      await this.rateLimiter.wait();
+      await this.rateLimiter.wait(tier);
       const response = await fetch(url, {
         headers: {
           "User-Agent": USER_AGENT,
