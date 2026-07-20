@@ -6,50 +6,23 @@ const MAX_BANNED_LIST_RESULTS = 200;
 
 type BannedListCache = Record<MtgFormat, Set<string>>;
 
-const HEAVY_ENDPOINT_INTERVAL_MS = 500;
-const MANIFEST_INTERVAL_MS = 10000;
-const LIGHT_ENDPOINT_INTERVAL_MS = 100;
+// Scryfall's documented guidance (scryfall.com/docs/api/rate-limits) is a flat
+// 50-100ms delay between requests (under 10 req/s), not per-endpoint tiers.
+const REQUEST_INTERVAL_MS = 100;
 
 const MAX_RETRIES = 3;
+// A 429 response blocks the caller for 30 seconds per Scryfall's docs; cap
+// exponential backoff there so a retry never fires before the block lifts.
 const MAX_BACKOFF_MS = 30000;
+// Scryfall asks that responses be cached (or processed locally) for at least 24 hours.
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_CACHE_SIZE = 500;
 
-const HEAVY_PATH_PREFIXES = [
-  "/cards/search",
-  "/cards/named",
-  "/cards/random",
-  "/cards/collection",
-];
-
-const MANIFEST_PATH_PREFIX = "/bulk-data";
-
-type Tier = "heavy" | "manifest" | "light";
-
-function endpointTier(pathname: string): Tier {
-  if (pathname.startsWith(MANIFEST_PATH_PREFIX)) return "manifest";
-  if (HEAVY_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return "heavy";
-  return "light";
-}
-
-function tierIntervalMs(tier: Tier): number {
-  switch (tier) {
-    case "heavy":
-      return HEAVY_ENDPOINT_INTERVAL_MS;
-    case "manifest":
-      return MANIFEST_INTERVAL_MS;
-    case "light":
-      return LIGHT_ENDPOINT_INTERVAL_MS;
-  }
-}
-
-function tieredKey(url: string): string {
-  try {
-    const u = new URL(url);
-    return `${u.pathname}?${u.search}`;
-  } catch {
-    return url;
-  }
+function cacheKeyFor(url: string): string | null {
+  // A cached "random card" would defeat the point of the endpoint.
+  const { pathname, search } = new URL(url);
+  if (pathname.startsWith("/cards/random")) return null;
+  return `${pathname}?${search}`;
 }
 
 interface CacheEntry {
@@ -57,29 +30,38 @@ interface CacheEntry {
   value: unknown;
 }
 
-class TieredRateLimiter {
-  private queues: Record<Tier, Promise<void>> = {
-    heavy: Promise.resolve(),
-    manifest: Promise.resolve(),
-    light: Promise.resolve(),
-  };
-  private lastRequestAt: Record<Tier, number> = {
-    heavy: 0,
-    manifest: 0,
-    light: 0,
-  };
+/** Serializes requests so consecutive calls never run closer than REQUEST_INTERVAL_MS apart. */
+class RateLimiter {
+  private queue: Promise<void> = Promise.resolve();
+  private lastRequestAt = 0;
 
-  async waitFor(tier: Tier): Promise<void> {
-    const queue = this.queues[tier];
-    const turn = queue.then(async () => {
-      const wait = Math.max(0, tierIntervalMs(tier) - (Date.now() - this.lastRequestAt[tier]));
-      if (wait > 0) {
-        await new Promise((resolve) => setTimeout(resolve, wait));
+  async wait(): Promise<void> {
+    const turn = this.queue.then(async () => {
+      const elapsed = Date.now() - this.lastRequestAt;
+      const remaining = REQUEST_INTERVAL_MS - elapsed;
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining));
       }
-      this.lastRequestAt[tier] = Date.now();
+      this.lastRequestAt = Date.now();
     });
-    this.queues[tier] = turn;
+    this.queue = turn;
     return turn;
+  }
+}
+
+/**
+ * Mirrors Scryfall's documented Error object shape
+ * (scryfall.com/docs/api/errors): { object: "error", code, status, details, warnings? }.
+ */
+export class ScryfallError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string,
+    public readonly details: string,
+    public readonly warnings?: string[]
+  ) {
+    super(details);
+    this.name = "ScryfallError";
   }
 }
 
@@ -114,6 +96,19 @@ class InMemoryCache {
     const idx = this.insertionOrder.indexOf(key);
     if (idx !== -1) this.insertionOrder.splice(idx, 1);
   }
+}
+
+async function toScryfallError(response: Response): Promise<ScryfallError> {
+  const text = await response.text();
+  try {
+    const body = JSON.parse(text) as { object?: string; code?: string; details?: string; warnings?: string[] };
+    if (body.object === "error") {
+      return new ScryfallError(response.status, body.code ?? "unknown", body.details ?? text.slice(0, 500), body.warnings);
+    }
+  } catch {
+    // Not a JSON error body (e.g. an upstream 502 HTML page); fall through.
+  }
+  return new ScryfallError(response.status, "unknown", text.slice(0, 500));
 }
 
 export function colorIdentityQuery(colors: MtgColor[], exact = false): string {
@@ -166,14 +161,12 @@ export function mechanicQuery(mechanics: string[] = []): string {
 }
 
 export class ScryfallClient {
-  private rateLimiter = new TieredRateLimiter();
+  private rateLimiter = new RateLimiter();
   private cache = new InMemoryCache();
   private bannedLists: BannedListCache = {} as BannedListCache;
 
-  private cacheableTiers: Tier[] = ["heavy", "light"];
-
-  private async fetchJson<T>(url: string, tier: Tier): Promise<T> {
-    const cacheKey = this.cacheableTiers.includes(tier) ? tieredKey(url) : null;
+  private async fetchJson<T>(url: string): Promise<T> {
+    const cacheKey = cacheKeyFor(url);
     const cached = cacheKey !== null ? this.cache.get(cacheKey) : undefined;
     if (cached !== undefined) return cached as T;
 
@@ -181,7 +174,7 @@ export class ScryfallClient {
     let backoffMs = 1000;
 
     while (true) {
-      await this.rateLimiter.waitFor(tier);
+      await this.rateLimiter.wait();
       const response = await fetch(url, {
         headers: {
           "User-Agent": USER_AGENT,
@@ -199,8 +192,7 @@ export class ScryfallClient {
       }
 
       if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`Scryfall API error ${response.status}: ${text.slice(0, 500)}`);
+        throw await toScryfallError(response);
       }
 
       const result = (await response.json()) as T;
@@ -219,10 +211,10 @@ export class ScryfallClient {
     const url = `${SCRYFALL_API}/cards/search?${params.toString()}`;
 
     try {
-      const result = await this.fetchJson<ScryfallList<ScryfallCard>>(url, "heavy");
+      const result = await this.fetchJson<ScryfallList<ScryfallCard>>(url);
       return result.data.slice(0, limit);
     } catch (error) {
-      if (error instanceof Error && error.message.includes("404")) {
+      if (error instanceof ScryfallError && error.status === 404) {
         return [];
       }
       throw error;
@@ -231,17 +223,17 @@ export class ScryfallClient {
 
   async namedCard(name: string): Promise<ScryfallCard> {
     const params = new URLSearchParams({ fuzzy: name });
-    return this.fetchJson<ScryfallCard>(`${SCRYFALL_API}/cards/named?${params.toString()}`, "heavy");
+    return this.fetchJson<ScryfallCard>(`${SCRYFALL_API}/cards/named?${params.toString()}`);
   }
 
   async randomCard(query: string): Promise<ScryfallCard> {
     const params = new URLSearchParams({ q: query });
-    return this.fetchJson<ScryfallCard>(`${SCRYFALL_API}/cards/random?${params.toString()}`, "heavy");
+    return this.fetchJson<ScryfallCard>(`${SCRYFALL_API}/cards/random?${params.toString()}`);
   }
 
   async autocompleteCardNames(query: string): Promise<string[]> {
     const params = new URLSearchParams({ q: query });
-    const result = await this.fetchJson<{ data: string[] }>(`${SCRYFALL_API}/cards/autocomplete?${params.toString()}`, "light");
+    const result = await this.fetchJson<{ data: string[] }>(`${SCRYFALL_API}/cards/autocomplete?${params.toString()}`);
     return result.data;
   }
 
