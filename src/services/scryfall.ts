@@ -1,5 +1,5 @@
 import { USER_AGENT } from "../config.js";
-import { ImageVersion, ScryfallCard, ScryfallList, MtgColor, MtgFormat } from "../types/mtg.js";
+import { ImageVersion, ScryfallCard, ScryfallLang, ScryfallList, MtgColor, MtgFormat } from "../types/mtg.js";
 
 const SCRYFALL_API = "https://api.scryfall.com";
 const MAX_BANNED_LIST_RESULTS = 200;
@@ -218,10 +218,17 @@ export class ScryfallClient {
     }
   }
 
-  async searchCards(query: string, options: { limit?: number; order?: string; unique?: "cards" | "art" | "prints" } = {}): Promise<ScryfallCard[]> {
+  async searchCards(
+    query: string,
+    options: { limit?: number; order?: string; unique?: "cards" | "art" | "prints"; lang?: ScryfallLang } = {}
+  ): Promise<ScryfallCard[]> {
     const limit = Math.max(1, Math.min(options.limit ?? 20, 175));
+    let q = query.trim();
+    if (options.lang && !/\blang(?:uage)?:/i.test(q)) {
+      q = `${q} lang:${options.lang}`.trim();
+    }
     const params = new URLSearchParams({
-      q: query,
+      q,
       order: options.order ?? "edhrec",
       unique: options.unique ?? "cards",
     });
@@ -238,9 +245,53 @@ export class ScryfallClient {
     }
   }
 
-  async namedCard(name: string): Promise<ScryfallCard> {
-    const params = new URLSearchParams({ fuzzy: name });
-    return this.fetchJson<ScryfallCard>(`${SCRYFALL_API}/cards/named?${params.toString()}`);
+  /**
+   * Resolve a card by English Oracle name or localized printed name.
+   * Optionally re-fetch a print in `options.lang` (falls back to the first match if that language has no print).
+   */
+  async namedCard(name: string, options: { lang?: ScryfallLang } = {}): Promise<ScryfallCard> {
+    let card = await this.resolveCardByName(name);
+    if (options.lang && card.lang !== options.lang) {
+      const localized = await this.findPrintInLang(card.name, options.lang);
+      if (localized) card = localized;
+    }
+    return card;
+  }
+
+  private async resolveCardByName(name: string): Promise<ScryfallCard> {
+    const trimmed = name.trim();
+    try {
+      const params = new URLSearchParams({ fuzzy: trimmed });
+      return await this.fetchJson<ScryfallCard>(`${SCRYFALL_API}/cards/named?${params.toString()}`);
+    } catch (error) {
+      if (!(error instanceof ScryfallError) || (error.status !== 404 && error.code !== "not_found" && error.code !== "ambiguous")) {
+        throw error;
+      }
+    }
+
+    const exact = await this.searchCards(`!"${trimmed}" lang:any`, { limit: 2, unique: "cards", order: "name" });
+    if (exact.length === 1) return exact[0];
+    if (exact.length > 1) {
+      throw new ScryfallError(404, "ambiguous", `Multiple cards matched the name "${trimmed}".`);
+    }
+
+    const loose = await this.searchCards(`${JSON.stringify(trimmed)} lang:any`, { limit: 2, unique: "cards", order: "name" });
+    if (loose.length === 1) return loose[0];
+    if (loose.length > 1) {
+      throw new ScryfallError(404, "ambiguous", `Multiple cards matched the name "${trimmed}".`);
+    }
+
+    throw new ScryfallError(404, "not_found", `No cards found matching "${trimmed}".`);
+  }
+
+  private async findPrintInLang(oracleName: string, lang: ScryfallLang): Promise<ScryfallCard | undefined> {
+    // Prefer a recent print (dir=desc) so imagery and localization tend to be current.
+    const prints = await this.searchCards(`!"${oracleName}" lang:${lang} direction:desc`, {
+      limit: 1,
+      unique: "prints",
+      order: "released"
+    });
+    return prints[0];
   }
 
   async randomCard(query: string): Promise<ScryfallCard> {
@@ -267,11 +318,59 @@ export class ScryfallClient {
   }
 }
 
+export type CardLocaleFields = {
+  name: string;
+  printedName?: string;
+  printedTypeLine?: string;
+  printedText?: string;
+  lang?: string;
+  typeLine?: string;
+  oracleText?: string;
+};
+
+/** Oracle name/text plus optional localized print fields from Scryfall. */
+export function cardLocaleFields(card: ScryfallCard): CardLocaleFields {
+  const facesOracle = card.card_faces?.map((face) => face.oracle_text ?? "").filter(Boolean).join("\n//\n");
+  const facesPrinted = card.card_faces?.map((face) => face.printed_text ?? face.oracle_text ?? "").filter(Boolean).join("\n//\n");
+  const printedName =
+    card.printed_name ??
+    card.card_faces?.map((face) => face.printed_name ?? face.name).filter(Boolean).join(" // ") ??
+    undefined;
+  const printedTypeLine =
+    card.printed_type_line ??
+    card.card_faces?.map((face) => face.printed_type_line ?? face.type_line).filter(Boolean).join(" // ") ??
+    undefined;
+
+  return {
+    name: card.name,
+    printedName: printedName && printedName !== card.name ? printedName : card.printed_name,
+    printedTypeLine,
+    printedText: card.printed_text ?? facesPrinted,
+    lang: card.lang,
+    typeLine: card.type_line,
+    oracleText: card.oracle_text ?? facesOracle
+  };
+}
+
 export function summarizeCard(card: ScryfallCard): string {
-  const faces = card.card_faces?.map((face) => `${face.name}: ${face.oracle_text ?? ""}`).join(" // ");
-  const oracle = card.oracle_text ?? faces ?? "";
+  const locale = cardLocaleFields(card);
+  const faces = card.card_faces?.map((face) => {
+    const faceName = face.printed_name && face.printed_name !== face.name
+      ? `${face.printed_name} (${face.name})`
+      : face.name;
+    return `${faceName}: ${face.printed_text ?? face.oracle_text ?? ""}`;
+  }).join(" // ");
+  const body = locale.printedText && card.lang && card.lang !== "en"
+    ? locale.printedText
+    : (card.oracle_text ?? faces ?? "");
   const price = card.prices?.usd ? ` / $${card.prices.usd}` : "";
-  return `${card.name} ${card.mana_cost ?? ""} — ${card.type_line ?? ""}${price}\n${oracle}\n${card.scryfall_uri ?? ""}`.trim();
+  const typeLine = (card.lang && card.lang !== "en" && locale.printedTypeLine)
+    ? locale.printedTypeLine
+    : (card.type_line ?? "");
+  const heading = locale.printedName && locale.printedName !== card.name
+    ? `${locale.printedName} (${card.name})`
+    : card.name;
+  return `${heading} ${card.mana_cost ?? ""} — ${typeLine}${price}\n${body}\n${card.scryfall_uri ?? ""}`.trim();
 }
 
 function faceImageUris(card: ScryfallCard, face: "front" | "back"): Record<string, string> | undefined {
