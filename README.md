@@ -1,27 +1,29 @@
 # MtG-Deckbuild-MCP
 
-Scryfall API に接続し、AI モデルが Magic: The Gathering の実践的なデッキ構築を行えるようにする MCP サーバーです。
+> 日本語: [README_ja.md](./README_ja.md)
 
-## 機能
+An MCP server that connects to the Scryfall API so AI models can build practical Magic: The Gathering decks.
 
-- Scryfall のカード検索、曖昧カード名解決、フォーマット別リーガリティ確認
-- フォーマット、色、ギミック、予算、パワーレベルを考慮したカード提案
-- Commander / Brawl / Oathbreaker のシングルトン構築と 60 枚構築の基本構造に対応
-- 土地、ランプ、ドロー、除去、シナジー、勝ち筋、サイドボードをカテゴリ分けして提案
-- MTGDecks、MTGGoldfish、MTGTop8 の大会結果ページを出典として返す参照ツール
-- 既存デッキリストの枚数、カード解決、リーガリティ、シングルトン問題の簡易分析
-- 対話形式でカラー・キーワード能力・プレイスタイルを聞き取りながら最適デッキを提案するウィザード
-- 既存デッキ中の高価カードに対する廉価な代替候補の提案(概算節約額付き)
-- マイデッキの保存・一覧・取得・編集・削除(Workers KV / ローカル JSON ファイル、ログイン不要)
+## Features
 
-## セットアップ
+- Scryfall card search, fuzzy name resolution, and format legality checks
+- Card recommendations by format, colors, mechanics, budget, and power level
+- Singleton construction for Commander / Brawl / Oathbreaker and 60-card shells
+- Categorized suggestions: lands, ramp, draw, interaction, synergy, win conditions, sideboard
+- Tournament reference snippets from MTGDecks, MTGGoldfish, and MTGTop8
+- Lightweight analysis of existing decklists (counts, name resolution, legality, singleton issues)
+- Interactive wizard that gathers colors, keywords, and playstyle, then builds a deck
+- Budget alternatives for expensive cards (with estimated savings)
+- Save / list / get / edit / delete personal decks (Workers KV or local JSON; no login)
+
+## Setup
 
 ```bash
 npm install
 npm run build
 ```
 
-## MCP クライアント設定例
+## MCP client configuration example
 
 ```json
 {
@@ -34,118 +36,152 @@ npm run build
 }
 ```
 
-開発中は以下でも起動できます。
+For development:
 
 ```bash
 npm run dev
 ```
 
-## Cloudflare Workers へのリモートデプロイ
+## Remote deploy on Cloudflare Workers
 
-stdio 版とは別に、Cloudflare Workers 上でリモート MCP サーバー(Streamable HTTP、`/mcp` エンドポイント)としても動作します。ツール定義は `src/server.ts` の `createServer()` に共通化されており、stdio(`src/index.ts`)と Workers(`src/worker.ts`)の両エントリから利用されます。
+Besides the stdio entrypoint, the same tools run as a remote MCP server on Cloudflare Workers (Streamable HTTP at `/mcp`). Tool definitions live in `createServer()` in `src/server.ts` and are shared by stdio (`src/index.ts`) and Workers (`src/worker.ts`).
 
-### ローカル確認
+### Local check
 
 ```bash
 npm run dev:worker
 ```
 
-`http://127.0.0.1:8787/mcp` が MCP エンドポイントになります。[MCP Inspector](https://github.com/modelcontextprotocol/inspector) や `curl` の Streamable HTTP リクエストで動作確認できます。
+The MCP endpoint is `http://127.0.0.1:8787/mcp`. You can verify with [MCP Inspector](https://github.com/modelcontextprotocol/inspector) or Streamable HTTP `curl` requests.
 
-### デプロイ
+### Deploy
 
-初回のみ `npx wrangler login` で Cloudflare アカウントにログインし、マイデッキ保存用の KV ネームスペースを作成してください。
+On first setup, run `npx wrangler login` and create a KV namespace for saved decks:
 
 ```bash
 npx wrangler kv namespace create DECKS
 ```
 
-出力された `id` を `wrangler.jsonc` の `kv_namespaces` の `id`(`REPLACE_WITH_KV_NAMESPACE_ID`)に貼り付けます。
+Paste the returned `id` into `wrangler.jsonc` under `kv_namespaces` (`REPLACE_WITH_KV_NAMESPACE_ID`).
 
 ```bash
 npm run deploy
 ```
 
-デプロイ後、`https://mtg-deckbuild-mcp.<あなたのサブドメイン>.workers.dev/mcp` が公開エンドポイントになります。**本サーバーにはログイン・認証機能はなく、`/mcp` に到達できる人は誰でもすべてのツール(マイデッキの保存・編集・削除を含む)を実行できます。** マイデッキは KV 上の単一の共有領域に保存されるため、複数人が同じエンドポイントに接続する場合はデッキが相互に見える点に注意してください。
+After deploy, the public endpoint is `https://mtg-deckbuild-mcp.<your-subdomain>.workers.dev/mcp`. **There is no login or auth: anyone who can reach `/mcp` can run every tool, including save/edit/delete for decks.** Decks share a single KV bucket, so multiple users on the same endpoint can see each other's decks.
 
-stdio 版(`dist/index.js`)のデッキは `~/.mtg-deckbuild-mcp/decks/` に JSON ファイルとして保存されます。
+stdio decks (`dist/index.js`) are stored as JSON under `~/.mtg-deckbuild-mcp/decks/`.
 
-### 自動デプロイ(GitHub Actions)
+### Auto-deploy (GitHub Actions)
 
-`main` ブランチへの push(`src/`、`wrangler.jsonc`、`package.json` の変更時)で [.github/workflows/deploy.yml](.github/workflows/deploy.yml) が自動的に `wrangler deploy` を実行します。手動実行(`workflow_dispatch`)にも対応しています。
+Pushes to `main` that touch `src/`, `wrangler.jsonc`, or `package.json` run `wrangler deploy` via [.github/workflows/deploy.yml](.github/workflows/deploy.yml). Manual runs (`workflow_dispatch`) are supported.
 
-初回セットアップとして、GitHub リポジトリの Settings → Secrets and variables → Actions に以下を登録してください。
+Register these repository secrets under Settings → Secrets and variables → Actions:
 
-| Secret | 値 |
+| Secret | Value |
 | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare ダッシュボードで発行する API トークン。「Edit Cloudflare Workers」権限のみに絞ったカスタムトークンを推奨 |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare ダッシュボードのアカウント ID(ダッシュボード右側サイドバーで確認可能) |
+| `CLOUDFLARE_API_TOKEN` | API token from the Cloudflare dashboard (prefer a custom token limited to “Edit Cloudflare Workers”) |
+| `CLOUDFLARE_ACCOUNT_ID` | Account ID from the Cloudflare dashboard sidebar |
 
-登録後は `npm run deploy` を手動実行する必要はなく、`main` への push だけでデプロイされます。
+After that, pushes to `main` deploy without a manual `npm run deploy`.
 
-> **注意**: `wrangler.jsonc` の KV ネームスペース `id` が実際の値に置き換えられるまで、自動デプロイは失敗します(Secret はデプロイをまたいで保持されるため、ワークフロー側の変更は不要です)。
+> **Note**: Auto-deploy fails until the KV namespace `id` in `wrangler.jsonc` is a real value (secrets persist across deploys; no workflow change needed for that).
 
-### Claude Web でカスタムコネクタとして接続
+### Connect from Claude Web as a custom connector
 
-1. claude.ai の設定 → コネクタ → 「カスタムコネクタを追加」
-2. 上記の `/mcp` で終わる URL を入力(認証不要)
-3. 接続後、チャットで `search_cards` などのツールが利用可能になります
+1. claude.ai → Settings → Connectors → Add custom connector
+2. Paste the `/mcp` URL (no auth)
+3. After connecting, tools such as `search_cards` are available in chat
 
-### Grok でカスタムコネクタとして接続
+### Connect from Grok as a custom connector
 
 1. grok.com/connectors → **New Connector** → **Custom**
-2. 上記の `/mcp` で終わる URL を入力
-3. ツールが自動検出されれば接続完了です
+2. Paste the `/mcp` URL
+3. Done when tools are auto-detected
 
 ### CORS / CSP
 
-- **本サーバーへのアクセス**: `/mcp` への `POST`/`OPTIONS`/`GET` はすべて `Access-Control-Allow-Origin: *` を返します(`GET` は自前実装、`POST`/`OPTIONS` は `createMcpHandler`(`agents`パッケージ)が内部的に付与)。ブラウザ上で動作する MCP クライアントからも直接呼び出せることを `wrangler dev` + `curl -H "Origin: ..."` で確認済みです
-- **本サーバーから Scryfall への呼び出し**: すべて Cloudflare Workers / Node.js 上のサーバーサイド `fetch` で行っており、ブラウザを介さないため [Scryfall の CORS 要件](https://scryfall.com/docs/api)(`Origin` ヘッダーが呼び出し元ページのドメインと一致する必要がある、という制約)はそもそも適用されません
-- **画像を表示する UI を自作する場合**: 本サーバーの `imageUri` は `*.scryfall.io` を指すため、そのブラウザ画面で表示するなら Scryfall の CSP ガイドラインに従い `img-src *.scryfall.io` を、カード情報を直接 `api.scryfall.com` にも問い合わせるなら `connect-src api.scryfall.com` を、呼び出し側アプリケーションの CSP ヘッダーに追加してください(本 MCP サーバー自体は URL を返すだけで、ブラウザでの表示・追加リクエストは行いません)
+- **Access to this server**: `POST` / `OPTIONS` / `GET` on `/mcp` return `Access-Control-Allow-Origin: *` (`GET` is implemented here; `POST` / `OPTIONS` get the header from `createMcpHandler` in the `agents` package). Browser MCP clients can call the endpoint directly (verified with `wrangler dev` + `curl -H "Origin: ..."`).
+- **Calls from this server to Scryfall**: All Scryfall traffic is server-side `fetch` on Workers / Node.js, so [Scryfall CORS rules](https://scryfall.com/docs/api) for browser origins do not apply.
+- **If you build a UI that shows images**: `imageUri` points at `*.scryfall.io`. Follow Scryfall CSP guidance and allow `img-src *.scryfall.io`; if the UI also calls `api.scryfall.com` directly, add `connect-src api.scryfall.com`. This MCP server only returns URLs; it does not render images in the browser.
 
-### 既知の制約
+### Known limitations
 
-- Scryfall API 向けのレート制御・キャッシュはインスタンス内メモリに依存しています。Workers はリクエストごとに別アイソレートで実行される場合があるため、ベストエフォートの制御になります。個人利用程度のトラフィックでは問題になりません。
-- `find_tournament_decks` は1回の呼び出しで最大3件の外部サイトへ fetch します。
-- 大量のカード名解決(`analyze_deck`、`suggest_budget_alternatives`)は `/cards/named` を1枚ずつ逐次呼び出すため、上限枚数まで到達すると数秒〜十数秒かかることがあります。
+- Scryfall rate limiting and caching are in-process memory. Workers may run separate isolates per request, so control is best-effort. Fine for personal use.
+- `find_tournament_decks` fetches up to three external sites per call.
+- Bulk name resolution (`analyze_deck`, `suggest_budget_alternatives`) calls `/cards/named` sequentially and can take several seconds at the card limits.
 
-## 公開ツール
+## Public tools
 
-| Tool | 用途 |
+| Tool | Purpose |
 | --- | --- |
-| `search_cards` | Scryfall 構文、フォーマット、色、ギミックでカード検索(画像 URL・アーティスト名を含む) |
-| `get_card_details` | カード詳細、テキスト、価格、リーガリティ、画像 URL、アーティスト、Scryfall URL を取得 |
-| `recommend_cards` | デッキ方針に合うカードをカテゴリ別に提案 |
-| `build_deck` | 実践用のデッキシェルとデッキリストを生成 |
-| `analyze_deck` | 既存デッキリストを簡易検証 |
-| `find_tournament_decks` | 大会結果ページの引用スニペットと出典 URL を取得 |
-| `deck_wizard` | 対話形式でカラー・キーワード能力・プレイスタイル等を聞き取り、最適デッキを構築 |
-| `suggest_budget_alternatives` | デッキ中の高価カードを検出し、廉価な代替候補と概算節約額を提示 |
-| `save_deck` | マイデッキを保存 |
-| `list_decks` | 保存済みデッキの一覧 |
-| `get_deck` | 保存済みデッキの取得 |
-| `update_deck` | デッキ名・メモ・リストの編集、カードの追加/削除 |
-| `delete_deck` | 保存済みデッキの削除 |
+| `search_cards` | Search with Scryfall syntax, format, colors, mechanics (includes image URL and artist) |
+| `get_card_details` | Card details, text, price, legality, image URL, artist, Scryfall URL |
+| `recommend_cards` | Category recommendations for a deck plan |
+| `build_deck` | Practical deck shell and decklist |
+| `analyze_deck` | Light validation of an existing decklist |
+| `find_tournament_decks` | Tournament page snippets and citation URLs |
+| `deck_wizard` | Interactive questions for colors, keywords, playstyle, then build |
+| `suggest_budget_alternatives` | Cheaper substitutes for expensive cards with estimated savings |
+| `save_deck` | Save a personal deck |
+| `list_decks` | List saved decks |
+| `get_deck` | Fetch a saved deck |
+| `update_deck` | Edit name, notes, list; add/remove cards |
+| `delete_deck` | Delete a saved deck |
 
-### デッキウィザードの使い方
+### Deck wizard usage
 
-`deck_wizard` はステートレスな対話ツールです。引数なしで呼び出すと不足している設定(フォーマット、カラー、プレイスタイルなど)への質問が `questions` として返ります。クライアント(AI)はユーザーの回答を返却された `state` にマージして再度呼び出します。必須項目が揃うとデッキが構築されます。`format` と `colors` が揃っていれば `finalize: true` で即座に構築することもできます。
+`deck_wizard` is stateless. With no args it returns `questions` for missing settings (format, colors, playstyle, etc.). The client merges user answers into the returned `state` and calls again. When required fields are set, it builds a deck. With `format` and `colors` present you can pass `finalize: true` to build immediately.
 
-### マイデッキの編集例
+### Personal deck edit example
 
 ```json
 {
-  "id": "<get_deck や list_decks で取得した id>",
+  "id": "<id from get_deck or list_decks>",
   "addCards": ["2 Lightning Bolt"],
   "removeCards": ["Shock"]
 }
 ```
 
-### カード画像の取得
+### Card images
 
-`search_cards`・`recommend_cards`・`build_deck`・`get_card_details` はいずれも Scryfall のカード JSON に埋め込まれている `image_uris` をそのまま返すため、[画像専用エンドポイント(`format=image`)](https://scryfall.com/docs/api)への追加リクエストは不要です。`get_card_details` は同エンドポイントと同じ `version`(`small`/`normal`/`large`/`png`/`art_crop`/`border_crop`、既定は `large`)と `face`(`front`/`back`)パラメータを受け付け、両面カードで裏面が存在しない場合は Scryfall の 422 相当のエラーメッセージを返します。`artist` も併せて返すため、`art_crop` を単独で表示する場合でもアーティスト名を同じ画面内に出せます(Scryfall の画像利用ガイドラインが要求する表示要件)。
+`search_cards`, `recommend_cards`, `build_deck`, and `get_card_details` return `image_uris` already embedded in Scryfall card JSON, so no extra [image-format](https://scryfall.com/docs/api) request is needed. `get_card_details` accepts the same `version` (`small` / `normal` / `large` / `png` / `art_crop` / `border_crop`, default `large`) and `face` (`front` / `back`) as that endpoint. Requesting a back face on a single-faced card returns a Scryfall-style 422 message. `artist` is always included so `art_crop` UIs can credit the illustrator (Scryfall image guidelines).
 
-## 使用例
+### Multilingual support
+
+Card I/O follows [Scryfall Languages](https://scryfall.com/docs/api/languages).
+
+- **Input**: English Oracle names and localized printed names (e.g. `太陽の指輪`, `Contresort`) resolve via `get_card_details`, `analyze_deck`, `build_deck` commander/mustInclude, and `suggest_budget_alternatives`
+- **Output**: Optional `lang` (Scryfall code) prefers that language’s print and returns `printedName` / `printedTypeLine` / `printedText` / `lang` plus that print’s image URL
+- **`name` field**: Always the English Oracle name. Decklist strings are normalized to English Oracle names
+- **Codes**: `en` `es` `fr` `de` `it` `pt` `ja` `ko` `ru` `zhs` `zht` `he` `la` `grc` `ar` `sa` `ph` `qya` `dw`
+- **Default**: English Oracle print when `lang` is omitted
+- **Missing language print**: Falls back to a resolved print without error; printed fields may be omitted
+- **Limits**: Scryfall `/cards/autocomplete` is English-only, so this server does not offer multilingual autocomplete. Oracle text is always English (rules)
+
+Example: details by Japanese printed name.
+
+```json
+{
+  "name": "太陽の指輪",
+  "lang": "ja"
+}
+```
+
+Result: `name` is `Sol Ring`, `printedName` is `太陽の指輪`, image from the Japanese print.
+
+English name with Japanese print:
+
+```json
+{
+  "name": "Sol Ring",
+  "lang": "ja"
+}
+```
+
+The same `lang` is accepted on `search_cards`, `recommend_cards`, `build_deck`, `analyze_deck`, `suggest_budget_alternatives`, and `deck_wizard` (`state.lang`).
+
+## Usage examples
 
 ```json
 {
@@ -159,7 +195,7 @@ stdio 版(`dist/index.js`)のデッキは `~/.mtg-deckbuild-mcp/decks/` に JSON
 }
 ```
 
-Commander の例です。
+Commander example:
 
 ```json
 {
@@ -173,23 +209,24 @@ Commander の例です。
 }
 ```
 
-## Scryfall API ガイドライン準拠
+## Scryfall API guideline compliance
 
-本サーバーは [Scryfall API ドキュメント](https://scryfall.com/docs/api)の規約に従って実装されています。
+This server follows the [Scryfall API documentation](https://scryfall.com/docs/api).
 
-- **必須ヘッダー**: すべての Scryfall リクエストにアプリケーション固有の `User-Agent`(`src/config.ts` で一元管理、バージョン付き)と `Accept: application/json` を送信します
-- **レート制限**: [公式ガイドライン](https://scryfall.com/docs/api/rate-limits)が定めるエンドポイント別の上限に従い、`src/services/scryfall.ts` の `TieredRateLimiter` がパス名から自動判定した区分ごとに直列化します。`/cards/search`・`/cards/named`・`/cards/random`・`/cards/collection` は 2 req/秒(500ms間隔)、bulk data の manifest 系は 10 req/分(10,000ms間隔)、それ以外(autocomplete など)は 10 req/秒(100ms間隔)です。HTTP 429(30 秒間ブロックされる旨が明記されています)を受信した場合は `Retry-After` ヘッダーを尊重しつつ、なければ 1 秒から最大 30 秒まで倍加する指数バックオフで再試行します
-- **キャッシュ**: 公式ガイドラインが推奨する「最低 24 時間のキャッシュ」に従い、レスポンスを 24 時間インメモリキャッシュします(`/cards/random` は結果が意味を持たなくなるため対象外)
-- **エラーハンドリング**: [Error オブジェクト仕様](https://scryfall.com/docs/api/errors)(`{ object: "error", code, status, details, warnings }`)をそのままパースし、`ScryfallError` として `code`/`details`/`warnings` を呼び出し元に伝播します。生のレスポンス文字列を切り詰めて例外化する独自実装はしていません
-- **大量カード名解決**: 公式ガイドラインは「カード名・価格を大量かつ高速に引く場合は bulk data を使うこと」を求めています。本サーバーは個別デッキの分析・代替案提案という用途に限定されるため `/cards/named` の逐次呼び出しで十分と判断し、1 回の呼び出しで解決するカード枚数に上限(`analyze_deck` は 120 枚、`suggest_budget_alternatives` は高額カード最大 10 枚)を設けています。ログイン不要のツールなので、すべてのユーザーが同じキャッシュ・レート制御を共有します
-- **画像フォーマット**: [Request Formats](https://scryfall.com/docs/api)が定める `image` 形式(`version`: small/normal/large/png/art_crop/border_crop、`face`: front/back)は、通常の JSON レスポンスに埋め込まれた `image_uris` から同等の URL を組み立てて返すため、別リクエストは発行しません。裏面画像を明示的に要求されたが両面カードでない場合は Scryfall の 422 相当のエラーを返します
-- **画像利用ガイドライン**: カード画像は Scryfall から取得した URL をそのまま返すのみで、加工・クロップ・著作権表示の除去・自前のロゴ付与は一切行いません。`art_crop` を単独で提示する画面では `artist` フィールドを同じレスポンス内に含め、アーティスト名を確認できるようにしています
-- **CORS / CSP**: [CORS and CSP](https://scryfall.com/docs/api) の要件はブラウザ上の client-side JavaScript から直接 Scryfall を呼ぶ場合に適用されます。本サーバーはサーバーサイドの `fetch` のみで Scryfall を呼び出すため対象外ですが、本サーバー自体のエンドポイント(`/mcp`)は逆にブラウザ上の MCP クライアントから直接呼ばれる可能性があるため `Access-Control-Allow-Origin` を適切に返しています(詳細は上記デプロイ節参照)
-- **非ペイウォール**: すべてのツールがログイン・認証なしで利用できます
-- **付加価値**: 本ソフトウェアは Scryfall データの単純な再配布ではなく、デッキ構築・分析・推奨という付加価値を提供します
+- **Required headers**: Every Scryfall request sends an app-specific `User-Agent` (versioned in `src/config.ts`) and `Accept: application/json`
+- **Rate limits**: Per [official rate limits](https://scryfall.com/docs/api/rate-limits), `TieredRateLimiter` in `src/services/scryfall.ts` serializes by path tier: `/cards/search`, `/cards/named`, `/cards/random`, `/cards/collection` at 2 req/s (500 ms); bulk-data manifests at 10 req/min (10,000 ms); others (e.g. autocomplete) at 10 req/s (100 ms). On HTTP 429 (documented 30s block), it honors `Retry-After` or exponential backoff from 1s up to 30s
+- **Caching**: Responses are cached in memory for 24 hours per Scryfall guidance (`/cards/random` excluded)
+- **Errors**: [Error objects](https://scryfall.com/docs/api/errors) (`object`, `code`, `status`, `details`, `warnings`) are parsed into `ScryfallError` without ad-hoc string chopping
+- **Bulk name lookups**: Scryfall recommends bulk data for high-volume name/price work. This server only resolves names for single-deck analysis/alternatives, so it uses sequential `/cards/named` with caps (`analyze_deck` 120 cards; budget alternatives top 10 expensive cards). No login; all users share the same cache and rate limiter
+- **Image format**: `version` / `face` match [Request Formats](https://scryfall.com/docs/api) via embedded `image_uris` (no second request). Back face on a non-DFC returns a 422-style error
+- **Image usage**: Image URLs are returned as-is (no crop, watermark strip, or custom logos). Responses that include `art_crop` also include `artist`
+- **CORS / CSP**: Scryfall [CORS/CSP](https://scryfall.com/docs/api) apply to browser JS calling Scryfall directly. This server only uses server-side `fetch`. Its own `/mcp` endpoint sets `Access-Control-Allow-Origin` for browser MCP clients (see deploy section)
+- **No paywall**: All tools work without login
+- **Languages**: Uses [Languages](https://scryfall.com/docs/api/languages) and [search `lang:`](https://scryfall.com/docs/syntax) for printed fields; Oracle names stay English for identity (e.g. ban lists)
+- **Value-add**: Deck building, analysis, and recommendations—not a bare Scryfall mirror
 
-## 出典と注意
+## Sources and notes
 
-- カードデータ、画像 URL、価格、リーガリティは Scryfall API を参照します。
-- 大会結果の参照は MTGDecks、MTGGoldfish、MTGTop8 の公開ページ URL と取得可能なスニペットを返します。
-- 生成されたリストは構築のたたき台です。大会参加前に最新禁止改定、イベント規定、ローカルメタに合わせて調整してください。
+- Card data, image URLs, prices, and legality come from the Scryfall API.
+- Tournament references return public page URLs and available snippets from MTGDecks, MTGGoldfish, and MTGTop8.
+- Generated lists are starting points. Before events, check the latest bans, event rules, and local metagame.
