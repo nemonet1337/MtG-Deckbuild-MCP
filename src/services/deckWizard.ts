@@ -12,7 +12,8 @@ import {
   MtgFormat,
   normalizeColors,
   POWER_LEVELS,
-  PowerLevel
+  PowerLevel,
+  ScryfallLang
 } from "../types/mtg.js";
 import { DeckBuilderService } from "./deckbuilder.js";
 
@@ -29,6 +30,7 @@ export type WizardState = {
   budget?: BudgetTier;
   powerLevel?: PowerLevel;
   costModel?: CostModel;
+  lang?: ScryfallLang;
   /** Set once the optional-preferences round has been asked, so it is asked only once. */
   skippedOptional?: boolean;
 };
@@ -123,7 +125,8 @@ export function toBuildRequest(state: WizardState): DeckBuildRequest {
     budget: state.budget ?? "any",
     powerLevel: state.powerLevel ?? "focused",
     costModel: state.costModel ?? "paper",
-    includeSideboard: true
+    includeSideboard: true,
+    lang: state.lang
   };
 }
 

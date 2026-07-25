@@ -1,9 +1,11 @@
-import { MtgColor, MtgFormat, ScryfallCard } from "../types/mtg.js";
+import { MtgColor, MtgFormat, ScryfallCard, ScryfallLang } from "../types/mtg.js";
 import { parseDecklist } from "./deckAnalyzer.js";
 import { colorIdentityQuery, formatLegalityQuery, ScryfallClient } from "./scryfall.js";
 
 export type BudgetAlternative = {
   name: string;
+  printedName?: string;
+  lang?: string;
   priceUsd: string | null;
   typeLine?: string;
   oracleText?: string;
@@ -11,7 +13,7 @@ export type BudgetAlternative = {
 };
 
 export type BudgetSwap = {
-  original: { name: string; quantity: number; priceUsd: string | null; typeLine?: string };
+  original: { name: string; printedName?: string; lang?: string; quantity: number; priceUsd: string | null; typeLine?: string };
   alternatives: BudgetAlternative[];
   note?: string;
 };
@@ -30,6 +32,7 @@ export type BudgetOptions = {
   format?: MtgFormat;
   maxCards?: number;
   alternativesPerCard?: number;
+  lang?: ScryfallLang;
 };
 
 const DEFAULT_THRESHOLD_USD = 5;
@@ -103,7 +106,7 @@ export class BudgetAlternativesService {
 
     for (const entry of entries) {
       try {
-        const card = await this.client.namedCard(entry.name);
+        const card = await this.client.namedCard(entry.name, { lang: opts.lang });
         const price = cardPriceUsd(card);
         if (price !== null) deckTotalUsd += price * entry.quantity;
         resolved.push({ card, quantity: entry.quantity, price });
@@ -135,12 +138,13 @@ export class BudgetAlternativesService {
       let note: string | undefined;
       let alternatives = await this.client.searchCards(
         [...baseParts, ...keywordParts].filter(Boolean).join(" "),
-        { limit: alternativesPerCard, order: "edhrec" }
+        { limit: alternativesPerCard, order: "edhrec", lang: opts.lang }
       );
       if (alternatives.length === 0 && keywordParts.length > 0) {
         alternatives = await this.client.searchCards(baseParts.filter(Boolean).join(" "), {
           limit: alternativesPerCard,
-          order: "edhrec"
+          order: "edhrec",
+          lang: opts.lang
         });
         note = "loose match";
       }
@@ -152,15 +156,22 @@ export class BudgetAlternativesService {
         estimatedSavingsUsd += Math.max(0, (price - Math.min(...alternativePrices)) * quantity);
       }
 
+      const printed = (c: ScryfallCard) =>
+        c.printed_name && c.printed_name !== c.name ? c.printed_name : c.printed_name;
+
       swaps.push({
         original: {
           name: card.name,
+          printedName: printed(card),
+          lang: card.lang,
           quantity,
           priceUsd: card.prices?.usd ?? card.prices?.usd_foil ?? null,
           typeLine: card.type_line
         },
         alternatives: alternatives.map((alt) => ({
           name: alt.name,
+          printedName: printed(alt),
+          lang: alt.lang,
           priceUsd: alt.prices?.usd ?? alt.prices?.usd_foil ?? null,
           typeLine: alt.type_line,
           oracleText: alt.oracle_text,

@@ -1,4 +1,4 @@
-import { isSingletonFormat, MtgFormat } from "../types/mtg.js";
+import { isSingletonFormat, MtgFormat, ScryfallLang } from "../types/mtg.js";
 import { ScryfallClient } from "./scryfall.js";
 
 const MAX_CARDS_TO_RESOLVE = 120;
@@ -13,6 +13,8 @@ export type DecklistEntry = {
 
 export type AnalyzedCard = DecklistEntry & {
   resolvedName?: string;
+  printedName?: string;
+  lang?: string;
   typeLine?: string;
   legality: string;
   legalityCategory: "legal" | "banned" | "restricted" | "not_legal" | "manual-check" | "unknown" | "unresolved";
@@ -42,7 +44,7 @@ export function parseDecklist(decklist: string): DecklistEntry[] {
 export class DeckAnalyzerService {
   constructor(private readonly client: ScryfallClient) {}
 
-  async analyzeDecklist(format: MtgFormat, decklist: string): Promise<DeckAnalysis> {
+  async analyzeDecklist(format: MtgFormat, decklist: string, options: { lang?: ScryfallLang } = {}): Promise<DeckAnalysis> {
     const entries = parseDecklist(decklist);
     const singleton = isSingletonFormat(format);
     const total = entries.reduce((sum, entry) => sum + entry.quantity, 0);
@@ -50,7 +52,7 @@ export class DeckAnalyzerService {
     const checked: AnalyzedCard[] = [];
     for (const entry of entries.slice(0, MAX_CARDS_TO_RESOLVE)) {
       try {
-        const card = await this.client.namedCard(entry.name);
+        const card = await this.client.namedCard(entry.name, { lang: options.lang });
         const legality = format === "premodern" ? "manual-check" : card.legalities?.[format] ?? "unknown";
         const legalityCategory = legality === "legal" || legality === "manual-check"
           ? (legality as "legal" | "manual-check")
@@ -58,6 +60,8 @@ export class DeckAnalyzerService {
         checked.push({
           ...entry,
           resolvedName: card.name,
+          printedName: card.printed_name && card.printed_name !== card.name ? card.printed_name : card.printed_name,
+          lang: card.lang,
           typeLine: card.type_line,
           legality,
           legalityCategory,

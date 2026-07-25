@@ -105,6 +105,7 @@ function uniqueCards(cards: ScryfallCard[], used: Set<string>): ScryfallCard[] {
 }
 
 function toDeckCard(card: ScryfallCard, quantity: number, category: string, role: string, rationale: string): DeckCard {
+  const printedName = card.printed_name && card.printed_name !== card.name ? card.printed_name : undefined;
   return {
     name: card.name,
     quantity,
@@ -115,7 +116,9 @@ function toDeckCard(card: ScryfallCard, quantity: number, category: string, role
     priceUsd: card.prices?.usd ?? null,
     wildcardCost: rarityToWildcardCost(card.rarity) * quantity,
     imageUri: cardImageUri(card),
-    artist: cardArtist(card)
+    artist: cardArtist(card),
+    printedName,
+    lang: card.lang
   };
 }
 
@@ -168,12 +171,18 @@ function decklistSection(cards: DeckCard[]): string {
   return cards.map((card) => `${card.quantity} ${card.name}`).join("\n");
 }
 
-async function searchPackage(client: ScryfallClient, base: string, queries: string[], limit = 16): Promise<ScryfallCard[]> {
+async function searchPackage(
+  client: ScryfallClient,
+  base: string,
+  queries: string[],
+  limit = 16,
+  lang?: DeckBuildRequest["lang"]
+): Promise<ScryfallCard[]> {
   const found: ScryfallCard[] = [];
   const seen = new Set<string>();
   for (const query of queries) {
     try {
-      const cards = await client.searchCards(`${base} ${query}`, { limit, order: "edhrec" });
+      const cards = await client.searchCards(`${base} ${query}`, { limit, order: "edhrec", lang });
       for (const card of cards) {
         const key = card.name.toLowerCase();
         if (!seen.has(key)) {
@@ -196,15 +205,16 @@ export class DeckBuilderService {
     const strategyTerms = sanitizeStrategy(request.strategy);
     const mechanics = mechanicQuery([...(request.mechanics ?? []), ...strategyTerms]);
     const synergyQuery = mechanics || strategyTerms.map((term) => `o:${term}`).join(" ");
+    const lang = request.lang;
 
     const [ramp, draw, interaction, synergy, winConditions, lands, sideboard] = await Promise.all([
-      searchPackage(this.client, base, ["-t:land o:add o:mana", "t:artifact o:add o:mana", "o:search o:library o:land"], 12),
-      searchPackage(this.client, base, ["o:draw", "o:look o:library", "o:impulse"], 12),
-      searchPackage(this.client, base, ["o:destroy", "o:exile", "o:counter", "o:damage t:instant"], 14),
-      searchPackage(this.client, base, [synergyQuery || "sort:edhrec", ...strategyTerms.map((term) => `o:${term}`)], 20),
-      searchPackage(this.client, base, ["pow>=4", "o:\"win the game\"", "t:planeswalker", "o:double"], 10),
-      searchPackage(this.client, base, ["t:land -t:basic", "t:land"], 16),
-      searchPackage(this.client, base, ["o:graveyard", "o:artifact o:destroy", "o:enchantment o:destroy", "o:counter", "o:exile"], 15)
+      searchPackage(this.client, base, ["-t:land o:add o:mana", "t:artifact o:add o:mana", "o:search o:library o:land"], 12, lang),
+      searchPackage(this.client, base, ["o:draw", "o:look o:library", "o:impulse"], 12, lang),
+      searchPackage(this.client, base, ["o:destroy", "o:exile", "o:counter", "o:damage t:instant"], 14, lang),
+      searchPackage(this.client, base, [synergyQuery || "sort:edhrec", ...strategyTerms.map((term) => `o:${term}`)], 20, lang),
+      searchPackage(this.client, base, ["pow>=4", "o:\"win the game\"", "t:planeswalker", "o:double"], 10, lang),
+      searchPackage(this.client, base, ["t:land -t:basic", "t:land"], 16, lang),
+      searchPackage(this.client, base, ["o:graveyard", "o:artifact o:destroy", "o:enchantment o:destroy", "o:counter", "o:exile"], 15, lang)
     ]);
 
     const threshold = POWER_LEVEL_CONFIG[request.powerLevel ?? "focused"].edhrecThreshold;
@@ -232,7 +242,7 @@ export class DeckBuilderService {
 
     if (request.commander) {
       try {
-        const commander = await this.client.namedCard(request.commander);
+        const commander = await this.client.namedCard(request.commander, { lang: request.lang });
         addCards(mainboard, [commander], used, 1, "commander", "deck identity", "Commander or signature build-around requested by the user", true);
       } catch {
         mainboard.push({
@@ -240,7 +250,7 @@ export class DeckBuilderService {
           quantity: 1,
           category: "commander",
           role: "requested commander",
-          rationale: "Requested commander could not be resolved through Scryfall fuzzy lookup"
+          rationale: "Requested commander could not be resolved through Scryfall name lookup"
         });
         used.add(request.commander.toLowerCase());
       }
@@ -248,10 +258,10 @@ export class DeckBuilderService {
 
     for (const name of request.mustInclude ?? []) {
       try {
-        const card = await this.client.namedCard(name);
+        const card = await this.client.namedCard(name, { lang: request.lang });
         addCards(mainboard, [card], used, singleton ? 1 : 4, "must-include", "user requested card", "Explicitly requested by the user", singleton);
       } catch {
-        mainboard.push({ name, quantity: 1, category: "must-include", role: "unresolved requested card", rationale: "Could not resolve with Scryfall fuzzy lookup" });
+        mainboard.push({ name, quantity: 1, category: "must-include", role: "unresolved requested card", rationale: "Could not resolve with Scryfall name lookup" });
         used.add(name.toLowerCase());
       }
     }
