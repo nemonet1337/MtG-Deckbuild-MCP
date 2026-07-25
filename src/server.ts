@@ -6,9 +6,9 @@ import { DeckAnalyzerService, parseDecklist } from "./services/deckAnalyzer.js";
 import { DeckBuilderService } from "./services/deckbuilder.js";
 import { DeckStore, SavedDeck, deckSummary } from "./services/deckStore.js";
 import { PLAYSTYLES, runWizard, WizardState } from "./services/deckWizard.js";
-import { cardArtist, cardImageUri, colorIdentityQuery, formatLegalityQuery, hasBackFace, mechanicQuery, ScryfallClient, summarizeCard } from "./services/scryfall.js";
+import { cardArtist, cardImageUri, cardLocaleFields, colorIdentityQuery, formatLegalityQuery, hasBackFace, mechanicQuery, ScryfallClient, summarizeCard } from "./services/scryfall.js";
 import { getTournamentReferences } from "./services/tournamentSources.js";
-import { BUDGET_TIERS, COST_MODELS, CostModel, DeckBuildRequest, IMAGE_VERSIONS, MTG_COLORS, MTG_FORMATS, MtgColor, MtgFormat, normalizeColors, POWER_LEVELS } from "./types/mtg.js";
+import { BUDGET_TIERS, COST_MODELS, CostModel, DeckBuildRequest, IMAGE_VERSIONS, MTG_COLORS, MTG_FORMATS, MtgColor, MtgFormat, normalizeColors, POWER_LEVELS, SCRYFALL_LANGS, ScryfallLang } from "./types/mtg.js";
 
 export interface ServerDeps {
   deckStore: DeckStore | null;
@@ -26,6 +26,9 @@ const colorSchema = z.enum(MTG_COLORS);
 const budgetSchema = z.enum(BUDGET_TIERS);
 const powerLevelSchema = z.enum(POWER_LEVELS);
 const costModelSchema = z.enum(COST_MODELS);
+const langSchema = z.enum(SCRYFALL_LANGS).optional().describe(
+  "Scryfall language code for printed name/text/image (en, ja, zhs, fr, ...). Default: English oracle print. Non-English card names are accepted as input regardless."
+);
 
 const deckPlanSchema = {
   format: formatSchema,
@@ -34,7 +37,8 @@ const deckPlanSchema = {
   mechanics: z.array(z.string()).optional(),
   budget: budgetSchema.optional(),
   powerLevel: powerLevelSchema.optional(),
-  costModel: costModelSchema.optional()
+  costModel: costModelSchema.optional(),
+  lang: langSchema
 };
 
 function jsonText(data: unknown) {
@@ -60,6 +64,7 @@ function requestFromArgs(args: {
   powerLevel?: DeckBuildRequest["powerLevel"];
   costModel?: DeckBuildRequest["costModel"];
   includeSideboard?: boolean;
+  lang?: ScryfallLang;
 }): DeckBuildRequest {
   return {
     ...args,
@@ -81,6 +86,7 @@ const wizardStateSchema = z.object({
   budget: budgetSchema.optional(),
   powerLevel: powerLevelSchema.optional(),
   costModel: costModelSchema.optional(),
+  lang: langSchema,
   skippedOptional: z.boolean().optional()
 });
 
@@ -110,7 +116,9 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
     "search_cards",
     {
       title: "Search MTG Cards",
-      description: "Search Scryfall with format, color identity, mechanics, card text, type, and price filters.",
+      description:
+        "Search Scryfall with format, color identity, mechanics, card text, type, and price filters. " +
+        "Optional lang returns localized printed name/text/image for that language print. Card names may be non-English.",
       inputSchema: {
         query: z.string().describe("Additional Scryfall query text, e.g. 't:creature o:draw'."),
         format: formatSchema.optional(),
@@ -118,28 +126,40 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
         mechanics: z.array(z.string()).optional(),
         exactColors: z.boolean().optional(),
         limit: z.number().int().min(1).max(50).optional(),
-        order: z.enum(["name", "set", "released", "rarity", "color", "usd", "tix", "eur", "cmc", "power", "toughness", "edhrec", "artist", "review"]).optional()
+        order: z.enum(["name", "set", "released", "rarity", "color", "usd", "tix", "eur", "cmc", "power", "toughness", "edhrec", "artist", "review"]).optional(),
+        lang: langSchema
       }
     },
-    async ({ query, format, colors, mechanics, exactColors, limit, order }) => {
+    async ({ query, format, colors, mechanics, exactColors, limit, order, lang }) => {
       const parts = [query];
       if (format) parts.push(formatLegalityQuery(format));
       if (colors?.length) parts.push(colorIdentityQuery(normalizeColors(colors), exactColors ?? false));
       if (mechanics?.length) parts.push(mechanicQuery(mechanics));
-      const cards = await client.searchCards(parts.filter(Boolean).join(" "), { limit: limit ?? 20, order: order ?? "edhrec" });
-      return jsonText(cards.map((card) => ({
-        name: card.name,
-        manaCost: card.mana_cost,
-        typeLine: card.type_line,
-        oracleText: card.oracle_text,
-        colorIdentity: card.color_identity,
-        legalities: card.legalities,
-        edhrecRank: card.edhrec_rank,
-        priceUsd: card.prices?.usd,
-        scryfallUri: card.scryfall_uri,
-        imageUri: cardImageUri(card),
-        artist: cardArtist(card)
-      })));
+      const cards = await client.searchCards(parts.filter(Boolean).join(" "), {
+        limit: limit ?? 20,
+        order: order ?? "edhrec",
+        lang
+      });
+      return jsonText(cards.map((card) => {
+        const locale = cardLocaleFields(card);
+        return {
+          name: locale.name,
+          printedName: locale.printedName,
+          printedTypeLine: locale.printedTypeLine,
+          printedText: locale.printedText,
+          lang: locale.lang,
+          manaCost: card.mana_cost,
+          typeLine: locale.typeLine,
+          oracleText: locale.oracleText,
+          colorIdentity: card.color_identity,
+          legalities: card.legalities,
+          edhrecRank: card.edhrec_rank,
+          priceUsd: card.prices?.usd,
+          scryfallUri: card.scryfall_uri,
+          imageUri: cardImageUri(card),
+          artist: cardArtist(card)
+        };
+      }));
     }
   );
 
@@ -150,19 +170,26 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
     {
       title: "Get Card Details",
       description:
-        "Resolve a card name with Scryfall fuzzy matching and return rules text, legality, pricing, an image URL, artist, and links.",
+        "Resolve a card name (English Oracle or localized printed name) with Scryfall matching and return rules text, " +
+        "legality, pricing, an image URL, artist, and links. Use lang for a localized print's name/text/image.",
       inputSchema: {
-        name: z.string(),
+        name: z.string().describe("English Oracle name or localized printed name, e.g. 'Sol Ring' or '太陽の指輪'."),
         imageVersion: imageVersionSchema.optional().describe("Image size/crop to return (small/normal/large/png/art_crop/border_crop). Default large."),
-        face: z.enum(["front", "back"]).optional().describe("Which face to use for double-faced cards. Default front.")
+        face: z.enum(["front", "back"]).optional().describe("Which face to use for double-faced cards. Default front."),
+        lang: langSchema
       }
     },
-    async ({ name, imageVersion, face }) => {
-      const card = await client.namedCard(name);
+    async ({ name, imageVersion, face, lang }) => {
+      const card = await client.namedCard(name, { lang });
       if (face === "back" && !hasBackFace(card)) {
         return { isError: true, content: [{ type: "text" as const, text: `${card.name} does not have a back face.` }] };
       }
+      const locale = cardLocaleFields(card);
       const lines = [summarizeCard(card)];
+      if (locale.printedName && locale.printedName !== locale.name) {
+        lines.push(`Printed name (${locale.lang ?? "local"}): ${locale.printedName}`);
+      }
+      if (locale.lang) lines.push(`Language: ${locale.lang}`);
       const imageUri = cardImageUri(card, { version: imageVersion, face });
       if (imageUri) lines.push(`Image (${imageVersion ?? "large"}${face === "back" ? ", back face" : ""}): ${imageUri}`);
       const artist = cardArtist(card);
@@ -175,23 +202,32 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
     "recommend_cards",
     {
       title: "Recommend Cards",
-      description: "Recommend ramp, draw, interaction, synergy pieces, win conditions, lands, and sideboard cards for a requested deck plan.",
+      description:
+        "Recommend ramp, draw, interaction, synergy pieces, win conditions, lands, and sideboard cards for a requested deck plan. " +
+        "Optional lang localizes printed names/text/images.",
       inputSchema: deckPlanSchema
     },
     async (args) => {
       const recommendations = await deckBuilder.recommendCards(requestFromArgs(args));
       return jsonText(Object.fromEntries(Object.entries(recommendations).map(([category, cards]) => [
         category,
-        cards.slice(0, 12).map((card) => ({
-          name: card.name,
-          typeLine: card.type_line,
-          oracleText: card.oracle_text,
-          priceUsd: card.prices?.usd,
-          edhrecRank: card.edhrec_rank,
-          scryfallUri: card.scryfall_uri,
-          imageUri: cardImageUri(card),
-          artist: cardArtist(card)
-        }))
+        cards.slice(0, 12).map((card) => {
+          const locale = cardLocaleFields(card);
+          return {
+            name: locale.name,
+            printedName: locale.printedName,
+            printedTypeLine: locale.printedTypeLine,
+            printedText: locale.printedText,
+            lang: locale.lang,
+            typeLine: locale.typeLine,
+            oracleText: locale.oracleText,
+            priceUsd: card.prices?.usd,
+            edhrecRank: card.edhrec_rank,
+            scryfallUri: card.scryfall_uri,
+            imageUri: cardImageUri(card),
+            artist: cardArtist(card)
+          };
+        })
       ])));
     }
   );
@@ -215,13 +251,16 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
     "analyze_deck",
     {
       title: "Analyze MTG Deck",
-      description: "Analyze an existing decklist for card count, fuzzy-resolved names, basic legality, and singleton issues.",
+      description:
+        "Analyze an existing decklist for card count, resolved names (English Oracle or localized printed names), basic legality, and singleton issues. " +
+        "resolvedName is always the English Oracle name.",
       inputSchema: {
         format: formatSchema,
-        decklist: z.string()
+        decklist: z.string(),
+        lang: langSchema
       }
     },
-    async ({ format, decklist }) => jsonText(await deckAnalyzer.analyzeDecklist(format, decklist))
+    async ({ format, decklist, lang }) => jsonText(await deckAnalyzer.analyzeDecklist(format, decklist, { lang }))
   );
 
   server.registerTool(
@@ -259,16 +298,18 @@ export function createServer(deps?: Partial<ServerDeps>): McpServer {
     {
       title: "Suggest Budget Alternatives",
       description:
-        "Find expensive cards in an existing decklist (by Scryfall USD price) and suggest cheaper functional alternatives with estimated savings.",
+        "Find expensive cards in an existing decklist (by Scryfall USD price) and suggest cheaper functional alternatives with estimated savings. " +
+        "Decklist card names may be non-English; optional lang localizes alternative printed names.",
       inputSchema: {
-        decklist: z.string().describe("Decklist as newline-separated 'N Card Name' entries."),
+        decklist: z.string().describe("Decklist as newline-separated 'N Card Name' entries (English or localized names)."),
         format: formatSchema.optional(),
         thresholdUsd: z.number().positive().optional().describe("Cards above this USD price get alternatives. Default 5."),
-        maxCards: z.number().int().min(1).max(20).optional()
+        maxCards: z.number().int().min(1).max(20).optional(),
+        lang: langSchema
       }
     },
-    async ({ decklist, format, thresholdUsd, maxCards }) =>
-      jsonText(await budgetAlternatives.suggest(decklist, { format, thresholdUsd, maxCards }))
+    async ({ decklist, format, thresholdUsd, maxCards, lang }) =>
+      jsonText(await budgetAlternatives.suggest(decklist, { format, thresholdUsd, maxCards, lang }))
   );
 
   if (deckStore) {
