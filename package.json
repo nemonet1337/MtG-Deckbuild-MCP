@@ -41,7 +41,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
     "agents": "^0.22.0",
-    "ai": "^7.0.71",
+    "ai": "^7.0.85",
     "zod": "^4.4.3"
   },
   "devDependencies": {
