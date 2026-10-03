@@ -148,3 +148,9 @@ vite.config.ts.timestamp-*
 
 # Kilo 
 .kilo/
+
+# Agent / local tooling
+# Share: .devcontainer/, .grok/config.toml, .claude/settings.json, .claude/rules/, .mcp.json, .vscode/mcp.json, .github/copilot/settings.json
+.claude/settings.local.json
+.mcp-auth/
+.headroom/
