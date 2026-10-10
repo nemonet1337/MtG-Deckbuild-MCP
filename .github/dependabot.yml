@@ -43,6 +43,13 @@ updates:
         update-types:
           - minor
           - patch
+    # agents は @modelcontextprotocol/sdk を peer に "1.30.0" と exact 指定しており、
+    # SDK だけを上げると npm ci が ERESOLVE で失敗する。agents が追いつくまで手動更新。
+    ignore:
+      - dependency-name: "@modelcontextprotocol/sdk"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
 
   - package-ecosystem: github-actions
     directory: /
