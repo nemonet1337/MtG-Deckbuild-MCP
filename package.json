@@ -40,15 +40,15 @@
   "homepage": "https://github.com/nemonet1337/MtG-Deckbuild-MCP#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.31.0",
-    "agents": "^0.27.0",
+    "agents": "^0.28.1",
     "ai": "^7.0.136",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261008.1",
+    "@cloudflare/workers-types": "^5.20261015.1",
     "@types/node": "^26.6.4",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "wrangler": "^4.149.0"
+    "wrangler": "^4.151.0"
   }
 }
